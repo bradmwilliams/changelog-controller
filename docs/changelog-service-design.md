@@ -61,9 +61,9 @@ The `/changelog` endpoint accepts a `format` query parameter. There is also a se
 
 Currently, all the work to produce a changelog happens at request time: when a caller asks for a diff, the service runs `oc` to fetch metadata for both releases, clone git repositories, and compute RPM diffs from scratch, which is why cold requests are slow.
 
-We should shift most of this work to happen earlier. As each release is accepted, the service should automatically extract and store its component manifest, RHCOS image digests, and RPM package list. When a diff is later requested between two releases, the component and RPM data is already stored. The only remaining step is fetching the source commits for changed components (what `oc adm release info --changelog` does), which saves significant time compared to running the full pipeline on demand.
+We should shift most of this work to happen earlier. As each release enters the Ready phase (when it begins verification), the service should automatically extract and store its component manifest, RHCOS image digests, and RPM package list. When a diff is later requested between two releases, the component and RPM data is already stored. The only remaining step is fetching the source commits for changed components (what `oc adm release info --changelog` does), which saves significant time compared to running the full pipeline on demand.
 
-1. **Proactive extraction.** When a release is accepted, the service should immediately run `oc` to extract its component manifest and RPM package list and store the results, rather than waiting until a diff is requested. This way the expensive `oc` work happens once per release and is kept in process memory, rather than being re-run on every diff request.
+1. **Proactive extraction.** When a release enters the Ready phase, the service should immediately run `oc` to extract its component manifest and RPM package list and store the results, rather than waiting until a diff is requested. This way the expensive `oc` work happens once per release and is kept in process memory, rather than being re-run on every diff request. The service detects ready releases by polling the new `/api/v1/releasestreams/ready` endpoint on `release-controller-api`.
 2. **Persistent storage.** Extracted results should be written to disk rather than kept only in process memory, so data survives pod restarts and is reloaded on startup, eliminating cold starts. The storage backend is configurable:
   - **Filesystem:** Stores each changelog result as a file on disk, named by the image digest of the release pair. This is the default and simplest option, requiring no additional infrastructure.
   - **SQLite:** Stores results in a local database file, which allows the service to query stored changelogs by release tag, date, or other fields rather than only looking up by exact digest.
@@ -71,13 +71,13 @@ We should shift most of this work to happen earlier. As each release is accepted
 3. **Async handling for cache misses.** Even with proactive extraction, data may not be available for every request, for example when the service first starts up or a release pair has never been seen before. Rather than making the caller wait while `oc` runs, the service should return `202 Accepted` immediately and queue the work in the background. The caller can retry the request once the data is ready.
 4. **Tag resolution.** Callers pass version tags like `4.15.0`, but `oc` requires full container image pull specs (e.g. `quay.io/openshift-release-dev/ocp-release@sha256:...`). Currently, `release-controller-api` resolves tags using in-process Kubernetes informers that watch the release ImageStreams on the `app.ci` cluster. Since the changelog service is a separate process, it does not have those informers. Instead, it should resolve tags by calling `release-controller-api`'s existing `/api/v1/releasestream/{stream}/release/{tag}` endpoint over HTTP, which returns the pull spec for a given tag.
 5. **Support for different output formats.** The service should return structured JSON for programmatic consumers (e.g. the payload agent) and markdown/HTML so the existing release-controller UI can delegate changelog rendering to it. The underlying data is the same; format is a rendering concern.
-6. **Per-package RPM changelogs.** The current RPM diff shows which packages were added, removed, or updated between two releases, but it would be useful to also know what changed within each package. The full per-package changelog (CVE fixes, commit descriptions) is embedded in each RPM and can be extracted by running `rpm -q --changelog` inside the RHCOS container image. This data could be extracted proactively at release acceptance time and stored alongside the RPM package list. One consideration is response size: exposing the full RPM changelog for every package could result in a very large payload, so it may be worth offering the raw rpmdb as an extractable artifact alongside the structured diff, letting consumers query it directly for the level of detail they need.
+6. **Per-package RPM changelogs.** The current RPM diff shows which packages were added, removed, or updated between two releases, but it would be useful to also know what changed within each package. The full per-package changelog (CVE fixes, commit descriptions) is embedded in each RPM and can be extracted by running `rpm -q --changelog` inside the RHCOS container image. This data could be extracted proactively when a release enters the Ready phase and stored alongside the RPM package list. One consideration is response size: exposing the full RPM changelog for every package could result in a very large payload, so it may be worth offering the raw rpmdb as an extractable artifact alongside the structured diff, letting consumers query it directly for the level of detail they need.
 
 ### Request flow
 
-**Per-release extraction (triggered on release acceptance):**
+**Per-release extraction (triggered when a release enters Ready):**
 
-1. Release watcher detects a newly accepted release via `release-controller-api`
+1. Release watcher polls `/api/v1/releasestreams/ready` on `release-controller-api` and detects a newly ready release
 2. `oc adm release info -o json <pull-spec>` -- extract component manifest
 3. `oc adm release info --rpmdb <pull-spec>` -- extract RHCOS image digest and RPM package list
 4. Store per-release record keyed by image digest
@@ -219,11 +219,10 @@ This requires pulling and running the RHCOS image, which is more expensive than 
 
 ## Open Questions
 
-1. **Extraction trigger.** The plan extracts per-release data when a payload is accepted. However, the most common need for diff data is during the verification window, when blocking jobs are running or have just failed. Should extraction be triggered at the Ready phase instead of, or in addition to, Accepted?
+1. ~~**Extraction trigger.** The plan extracts per-release data when a payload is accepted. However, the most common need for diff data is during the verification window, when blocking jobs are running or have just failed. Should extraction be triggered at the Ready phase instead of, or in addition to, Accepted?~~
 
+   **The changelog service should poll the new `/api/v1/releasestreams/ready` endpoint to detect payloads entering the verification window and begin extraction immediately.**
 2. **JSON schema ownership.** Should this service import the `ChangeLog` struct from `openshift/release-controller` as a Go module dependency, or copy and own the types independently?
-
 3. **Tag resolution.** Should the service continue resolving tags by calling `release-controller-api` over HTTP, or should it maintain its own tag-to-pull-spec mapping?
-
 4. **RPM package changelogs.** Should per-package RPM changelog data (CVE fixes, commit descriptions per package) be included in the initial schema, or added later?
 
