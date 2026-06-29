@@ -221,7 +221,9 @@ This requires pulling and running the RHCOS image, which is more expensive than 
 
 1. **Extraction trigger.** The plan extracts per-release data when a payload is accepted. However, the most common need for diff data is during the verification window, when blocking jobs are running or have just failed. Should extraction be triggered at the Ready phase instead of, or in addition to, Accepted?
 
-2. **JSON schema ownership.** The `ChangeLog` struct is defined in `openshift/release-controller`. Importing it as a Go module dependency keeps a single source of truth but couples this service to `release-controller`'s release cycle. Copying the types gives more independence but requires keeping them in sync manually. Which approach is preferred?
-3. **Tag resolution dependency.** The service calls `release-controller-api` over HTTP to resolve version tags to pull specs, which creates a runtime dependency on that service being available.
-4. **RPM package changelogs.** Should the response schema be designed upfront to include a field for per-package changelog data, or added when the feature is implemented?
+2. **JSON schema ownership.** Should this service import the `ChangeLog` struct from `openshift/release-controller` as a Go module dependency, or copy and own the types independently?
+
+3. **Tag resolution.** Should the service continue resolving tags by calling `release-controller-api` over HTTP, or should it maintain its own tag-to-pull-spec mapping?
+
+4. **RPM package changelogs.** Should per-package RPM changelog data (CVE fixes, commit descriptions per package) be included in the initial schema, or added later?
 
