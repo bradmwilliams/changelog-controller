@@ -25,12 +25,14 @@ The existing implementation lives in `openshift/release-controller`:
 | `cmd/release-controller-api/http.go`           | Registers all HTTP routes for the API server, including the `/changelog` endpoint. Entry point for understanding which URLs map to which handlers.                                                                                                                                                                                                               |
 | `cmd/release-controller-api/http_changelog.go` | The main handler for changelog requests. When a request comes in with `from` and `to` version tags (e.g. `4.15.0`, `4.16.0`), this file looks up the actual container image references those tags point to, calls the appropriate `oc` functions to generate the diff, and formats the result as JSON, markdown, or HTML depending on what the caller requested. |
 | `pkg/release-controller/release_info.go`       | The layer that actually runs `oc` subprocesses. Contains all functions for fetching image metadata, generating changelogs, and diffing RPM packages. Also defines the in-process cache (`groupcache`) and the concurrency semaphore that caps RPM operations at 16 concurrent calls.                                                                             |
-| `pkg/release-controller/types.go`              | Defines the schema for changelog data. The Go structs here (`ChangeLog`, `ChangeLogImageInfo`, `CommitInfo`, `RpmDiff`, etc.) map directly to the JSON response structure, making this the source of truth for what the API returns.                                                                                                                             |
+| `pkg/release-controller/types.go`              | Carries a local copy of the changelog data schema (`ChangeLog`, `ChangeLogImageInfo`, `CommitInfo`, `RpmDiff`, etc.). The canonical source for this schema is `oc` itself ([openshift/oc/pkg/cli/admin/release/info.go](https://github.com/openshift/oc/blob/main/pkg/cli/admin/release/info.go)); release-controller maintains its own copy of the structures. |
 | `pkg/rhcos/rhcos.go`                           | Post-processing for CoreOS-specific content. Enriches the JSON struct with CoreOS component metadata and rewrites CoreOS version strings in markdown output into clickable links.                                                                                                                                                                                |
 | `pkg/rhcos/node_image.go`                      | Generates the Node Image Info section of a changelog, which lists RPM package changes on the OpenShift node image (the CoreOS-based OS that runs on cluster nodes).                                                                                                                                                                                              |
 
 
 ### Request flow today
+
+The primary consumer API is `GET /api/v1/releasestream/{stream}/release/{tag}`, which returns the combined `ReleaseInfo` and `ChangeLog` as a single JSON response. The `/changelog` endpoint described below is mostly a UI convenience and is not heavily used by programmatic consumers.
 
 A single `GET /changelog?from=4.15.0&to=4.16.0&format=json` triggers all of this inline on the HTTP response goroutine:
 
@@ -44,7 +46,7 @@ A single `GET /changelog?from=4.15.0&to=4.16.0&format=json` triggers all of this
 
 ### Current output formats
 
-The `/changelog` endpoint accepts a `format` query parameter. There is also a separate endpoint (`/api/v1/releasestream/{stream}/release/{tag}`) that returns release metadata and embeds changelog JSON inline, but it is a different code path.
+The `/changelog` endpoint accepts a `format` query parameter. The separate endpoint `/api/v1/releasestream/{stream}/release/{tag}` provides the combined `ReleaseInfo` and `ChangeLog` data and is the primary API that consumers use.
 
 
 | Endpoint                                       | `format`             | Content-Type       | Description                                                                                                       |
@@ -70,8 +72,8 @@ We should shift most of this work to happen earlier. As each release enters the 
   - **BigQuery:** Writes results to a cloud-hosted database, making it possible to run queries across all historical changelogs from any machine, not just the server running the service.
 3. **Async handling for cache misses.** Even with proactive extraction, data may not be available for every request, for example when the service first starts up or a release pair has never been seen before. Rather than making the caller wait while `oc` runs, the service should return `202 Accepted` immediately and queue the work in the background. The caller can retry the request once the data is ready.
 4. **Tag resolution.** Callers pass version tags like `4.15.0`, but `oc` requires full container image pull specs (e.g. `quay.io/openshift-release-dev/ocp-release@sha256:...`). Currently, `release-controller-api` resolves tags using in-process Kubernetes informers that watch the release ImageStreams on the `app.ci` cluster. Since the changelog service is a separate process, it does not have those informers. Instead, it should resolve tags by calling `release-controller-api`'s existing `/api/v1/releasestream/{stream}/release/{tag}` endpoint over HTTP, which returns the pull spec for a given tag.
-5. **Support for different output formats.** The service should return structured JSON for programmatic consumers (e.g. the payload agent) and markdown/HTML so the existing release-controller UI can delegate changelog rendering to it. The underlying data is the same; format is a rendering concern.
-6. **Per-package RPM changelogs.** The current RPM diff shows which packages were added, removed, or updated between two releases, but it would be useful to also know what changed within each package. The full per-package changelog (CVE fixes, commit descriptions) is embedded in each RPM and can be extracted by running `rpm -q --changelog` inside the RHCOS container image. This data could be extracted proactively when a release enters the Ready phase and stored alongside the RPM package list. One consideration is response size: exposing the full RPM changelog for every package could result in a very large payload, so it may be worth offering the raw rpmdb as an extractable artifact alongside the structured diff, letting consumers query it directly for the level of detail they need.
+5. **Structured JSON only.** The service should deal exclusively in structured JSON. Rendering into other formats (markdown, HTML) is a presentation concern that belongs in a separate helper library or package, not in the service itself. This keeps the service focused on data production and allows consumers to choose their own rendering.
+6. **Per-package RPM changelogs.** The current RPM diff shows which packages were added, removed, or updated between two releases, but it would be useful to also know what changed within each package. This can be deferred but is worth revisiting later. Additionally, extracting per-package changelogs requires running containers inside containers (`podman run` against the RHCOS image), which presents security implications that need to be considered before implementation.
 
 ### Request flow
 
@@ -146,18 +148,11 @@ Called during diff request processing, using stored per-release data where possi
 
 Reference: `ExecReleaseInfo.RpmDiff()` (line 740) and `ExecReleaseInfo.RpmDiffForStream()` (line 767) in `release_info.go`. Data types: `RpmDiff`, `RpmList`, `RpmChangedDiff` (line 794).
 
-The concurrency semaphore from `release_info.go` (lines 54-59) must carry over:
-
-```go
-const MaxConcurrentRpmdbOCCalls = 16
-var RpmdbOCSlots = make(chan struct{}, MaxConcurrentRpmdbOCCalls)
-```
-
-Requests exceeding the limit return `429 Too Many Requests`.
+The existing release-controller uses a fixed concurrency semaphore (16 slots) that blocks requests when full. For the new service, we should avoid this fixed cap and instead support dynamic scaling to handle concurrent RPM operations without hard-blocking callers.
 
 **5. JSON schema**
 
-The `ChangeLog` struct in `release-controller/pkg/release-controller/types.go` (line 759) is the canonical response type and should be imported or copied:
+The response schema originates from `oc` ([openshift/oc/pkg/cli/admin/release/info.go](https://github.com/openshift/oc/blob/main/pkg/cli/admin/release/info.go)). This service should maintain its own copy of the struct definitions rather than importing from `release-controller` or `oc`:
 
 ```
 ChangeLog
@@ -172,23 +167,13 @@ ChangeLog
 
 `NodeImageStreams` (RPM diff data) currently lives on `APIReleaseInfo` (line 42), not on `ChangeLog`. It should be added directly to `ChangeLog` so the full diff is one unified struct. An OpenAPI spec should be written from this struct before significant consumer integration begins.
 
-**6. RHCOS post-processing**
+**6. Rendering (separate package)**
 
-After `oc` output is available, format-specific transforms from `release-controller/pkg/rhcos/` need to be applied:
+Rendering logic should be kept separate from the changelog generation logic. The service itself deals exclusively in structured JSON. A separate helper library/package should handle transforming the JSON data into other formats (markdown, HTML) for consumers that need them. The existing transforms in `release-controller/pkg/rhcos/` (`TransformJsonOutput`, `TransformMarkDownOutput`, `NodeImageSectionMarkdown`) can serve as reference for this helper package.
 
-- `rhcos.go:TransformJsonOutput()` (line 124): enriches JSON with CoreOS component metadata
-- `rhcos.go:TransformMarkDownOutput()` (line 61): rewrites CoreOS version lines into links
-- `node_image.go:NodeImageSectionMarkdown()` (line 19): generates the Node Image Info RPM section for markdown output
+**7. Response formatting**
 
-These can be imported as a Go module dependency rather than copied.
-
-**7. Output format completion**
-
-`writeChangelogResponse()` in `cmd.go` currently escapes the raw `oc` string. It needs to unmarshal into `ChangeLog`, then:
-
-- `format=json`: `json.MarshalIndent()` the struct
-- `format=md`: run `TransformMarkDownOutput()` and return the string
-- `format=html`: run markdown through blackfriday (same as the original)
+`writeChangelogResponse()` in `cmd.go` currently escapes the raw `oc` string. It needs to unmarshal into `ChangeLog` and return properly formatted JSON via `json.MarshalIndent()`.
 
 **8. Missing endpoints**
 
@@ -198,15 +183,7 @@ These can be imported as a Go module dependency rather than copied.
 
 **9. RPM package changelogs**
 
-The current RPM diff shows which packages were added, removed, or updated between two releases, but not what changed within each package. The full per-package changelog (CVE fixes, commit descriptions) is embedded in each RPM and can be extracted by running `rpm -q --changelog` inside the RHCOS container image:
-
-```
-podman run --entrypoint /bin/rpm \
-  `oc adm release info <tag> --image-for rhel-coreos` \
-  -q --changelog <package-name>
-```
-
-This requires pulling and running the RHCOS image, which is more expensive than the existing `--rpmdb-diff` approach. The `ChangeLog` struct would need a new field (e.g. `rpmChangelogs`) to hold this data per package. This has been explicitly requested by TRT as part of full payload observability.
+Can be deferred but worth revisiting later. Extracting per-package RPM changelogs requires running containers inside containers (`podman run` against the RHCOS image), which presents security implications that need to be addressed.
 
 **10. Tests and deployment**
 
@@ -217,12 +194,13 @@ This requires pulling and running the RHCOS image, which is more expensive than 
 
 ---
 
-## Open Questions
+## Resolved Questions
 
-1. ~~**Extraction trigger.** The plan extracts per-release data when a payload is accepted. However, the most common need for diff data is during the verification window, when blocking jobs are running or have just failed. Should extraction be triggered at the Ready phase instead of, or in addition to, Accepted?~~
+1. **Extraction trigger.** The changelog service should poll the new `/api/v1/releasestreams/ready` endpoint to detect payloads entering the verification window and begin extraction immediately.
 
-   **The changelog service should poll the new `/api/v1/releasestreams/ready` endpoint to detect payloads entering the verification window and begin extraction immediately.**
-2. **JSON schema ownership.** Should this service import the `ChangeLog` struct from `openshift/release-controller` as a Go module dependency, or copy and own the types independently?
-3. **Tag resolution.** Should the service continue resolving tags by calling `release-controller-api` over HTTP, or should it maintain its own tag-to-pull-spec mapping?
-4. **RPM package changelogs.** Should per-package RPM changelog data (CVE fixes, commit descriptions per package) be included in the initial schema, or added later?
+2. **JSON schema ownership.** The service should maintain its own copy of the types independently. No imports from `release-controller`.
+
+3. **Tag resolution.** Support both tags and pull specs. When tags are provided, the service makes an additional API call to `release-controller-api` to resolve the pull spec.
+
+4. **RPM package changelogs.** Can be deferred but worth revisiting later.
 
