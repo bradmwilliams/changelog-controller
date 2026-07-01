@@ -85,7 +85,7 @@ func TestHandleChangelog_FormatParameter(t *testing.T) {
 			queryParams:          "from=1.0.0&to=2.0.0&arch=amd64",
 			expectedStatus:       http.StatusOK,
 			expectedContentType:  "application/json",
-			expectedBodyContains: `"from": "1.0.0"`,
+			expectedBodyContains: `"from":"1.0.0"`,
 		},
 		{
 			name:                 "explicit json format",
@@ -292,7 +292,7 @@ func TestWriteChangelogResponse(t *testing.T) {
 			fromPullSpec: "",
 			toPullSpec:   "",
 			expectedCT:   "application/json",
-			expectedBody: `{"from": "1.0.0", "to": "2.0.0", "changelog": "Simple changelog"}`,
+			expectedBody: `{"from":"1.0.0","to":"2.0.0","changelog":"Simple changelog"}`,
 		},
 		{
 			name:         "json format with pullspecs",
@@ -303,7 +303,7 @@ func TestWriteChangelogResponse(t *testing.T) {
 			fromPullSpec: "quay.io/openshift-release-dev/ocp-release:4.21.9-x86_64",
 			toPullSpec:   "quay.io/openshift-release-dev/ocp-release:4.21.10-x86_64",
 			expectedCT:   "application/json",
-			expectedBody: `{"from": "4.21.9", "to": "4.21.10", "fromPullSpec": "quay.io/openshift-release-dev/ocp-release:4.21.9-x86_64", "toPullSpec": "quay.io/openshift-release-dev/ocp-release:4.21.10-x86_64", "changelog": "Bugfixes"}`,
+			expectedBody: `{"from":"4.21.9","to":"4.21.10","fromPullSpec":"quay.io/openshift-release-dev/ocp-release:4.21.9-x86_64","toPullSpec":"quay.io/openshift-release-dev/ocp-release:4.21.10-x86_64","changelog":"Bugfixes"}`,
 		},
 		{
 			name:         "markdown format without pullspecs",

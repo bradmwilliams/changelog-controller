@@ -2,6 +2,7 @@ package changelog_controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -551,36 +552,37 @@ func (o *Options) handleChangelog(w http.ResponseWriter, r *http.Request) {
 
 func (o *Options) writeChangelogResponse(w http.ResponseWriter, from, to, changelog, format, fromPullSpec, toPullSpec string) {
 	if format == "json" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		// Escape changelog content for JSON
-		escapedChangelog := ""
-		for _, ch := range changelog {
-			switch ch {
-			case '"':
-				escapedChangelog += "\\\""
-			case '\\':
-				escapedChangelog += "\\\\"
-			case '\n':
-				escapedChangelog += "\\n"
-			case '\r':
-				escapedChangelog += "\\r"
-			case '\t':
-				escapedChangelog += "\\t"
-			default:
-				escapedChangelog += string(ch)
-			}
+		var changelogField interface{}
+		if json.Valid([]byte(changelog)) {
+			changelogField = json.RawMessage(changelog)
+		} else {
+			changelogField = changelog
 		}
 
-		// Build JSON response with optional pullSpec fields
-		fmt.Fprintf(w, `{"from": "%s", "to": "%s"`, from, to)
-		if fromPullSpec != "" {
-			fmt.Fprintf(w, `, "fromPullSpec": "%s"`, fromPullSpec)
+		response := struct {
+			From         string      `json:"from"`
+			To           string      `json:"to"`
+			FromPullSpec string      `json:"fromPullSpec,omitempty"`
+			ToPullSpec   string      `json:"toPullSpec,omitempty"`
+			Changelog    interface{} `json:"changelog"`
+		}{
+			From:         from,
+			To:           to,
+			FromPullSpec: fromPullSpec,
+			ToPullSpec:   toPullSpec,
+			Changelog:    changelogField,
 		}
-		if toPullSpec != "" {
-			fmt.Fprintf(w, `, "toPullSpec": "%s"`, toPullSpec)
+
+		data, err := json.Marshal(response)
+		if err != nil {
+			klog.Errorf("Failed to marshal changelog response: %v", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
 		}
-		fmt.Fprintf(w, `, "changelog": "%s"}`, escapedChangelog)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write(data)
 		fmt.Fprintf(w, "\n")
 	} else {
 		w.Header().Set("Content-Type", "text/markdown")

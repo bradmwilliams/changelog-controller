@@ -1,8 +1,11 @@
 package changelog_controller
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -362,15 +365,30 @@ func (c *ReleasePayloadChangelogController) sync(ctx context.Context, req Change
 
 	klog.V(4).Infof("Generating changelog from %s to %s", req.From, req.To)
 
-	// TODO: Implement changelog generation logic
-	// Example:
-	// generatedChangelog, err := generateChangelog(ctx, req.From, req.To)
-	// if err != nil {
-	//     return fmt.Errorf("failed to generate changelog: %w", err)
-	// }
-	//
-	// After generation, store in cache and persistent storage:
-	// c.cache.Set(ctx, req.From, req.To, generatedChangelog)
+	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
+	oc, err := exec.LookPath("oc")
+	if err != nil {
+		return fmt.Errorf("failed to find oc: %w", err)
+	}
 
+	cmd := exec.CommandContext(ctx, oc, "adm", "release", "info", "--changelog=/tmp/git/", req.From, req.To, "--output=json")
+	cmd.Stdout = out
+	cmd.Stderr = errOut
+	klog.V(4).Infof("Running changelog command: %s", cmd.String())
+
+	if err := cmd.Run(); err != nil {
+		msg := errOut.String()
+		if len(msg) == 0 {
+			msg = err.Error()
+		}
+		if strings.Contains(msg, "Could not load commits for") {
+			klog.Warningf("Generated changelog with missing commits:\n$ %s\n%s", cmd.String(), errOut.String())
+		} else {
+			return fmt.Errorf("could not generate changelog: %s", msg)
+		}
+	}
+
+	klog.V(4).Infof("Finished running changelog command: %s", cmd.String())
+	c.cache.Set(ctx, req.From, req.To, out.String())
 	return nil
 }
