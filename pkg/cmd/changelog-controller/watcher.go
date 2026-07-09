@@ -79,10 +79,9 @@ func (w *ReleaseWatcher) seedInitialState(ctx context.Context) {
 	klog.Info("Release watcher: initial state seeded")
 }
 
-// newRelease pairs a newly detected release tag with its predecessor for changelog generation.
 type newRelease struct {
-	tag         string
-	predecessor string
+	tag        string
+	streamName string
 }
 
 // poll fetches ready releases from all endpoints and enqueues changelogs for new ones.
@@ -101,26 +100,29 @@ func (w *ReleaseWatcher) poll(ctx context.Context) {
 			w.seen[key] = make(map[string]bool)
 		}
 		for streamName, tags := range streams {
-			for i, tag := range tags {
+			for _, tag := range tags {
 				if w.seen[key][tag] {
 					continue
 				}
 				w.seen[key][tag] = true
 				klog.Infof("Release watcher: new ready release detected: %s in stream %s (endpoint %s)", tag, streamName, key)
-
-				// The predecessor is the next element in the sorted list (tags are newest-first)
-				if i+1 < len(tags) {
-					detected = append(detected, newRelease{tag: tag, predecessor: tags[i+1]})
-				} else {
-					klog.V(4).Infof("Release watcher: no predecessor for %s in stream %s, skipping changelog", tag, streamName)
-				}
+				detected = append(detected, newRelease{tag: tag, streamName: streamName})
 			}
 		}
 		w.mu.Unlock()
 
-		// Resolve pull specs and enqueue outside the lock
+		// Look up predecessor via /latest and enqueue outside the lock
 		for _, nr := range detected {
-			w.enqueueChangelog(ctx, client, nr.predecessor, nr.tag)
+			latest, err := client.GetLatestAcceptedForStream(ctx, nr.streamName)
+			if err != nil {
+				klog.Warningf("Release watcher: failed to get latest accepted for stream %s: %v", nr.streamName, err)
+				continue
+			}
+			if latest.Name == nr.tag {
+				klog.V(4).Infof("Release watcher: %s is already the latest accepted in stream %s, no predecessor to diff against", nr.tag, nr.streamName)
+				continue
+			}
+			w.enqueueChangelog(ctx, client, latest.Name, nr.tag)
 		}
 	}
 }

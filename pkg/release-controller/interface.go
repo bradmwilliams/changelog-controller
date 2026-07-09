@@ -32,6 +32,10 @@ type Client interface {
 	// GetLatestReleaseForStream returns the first (most recent) release for a specific stream
 	GetLatestReleaseForStream(ctx context.Context, streamName string) (string, error)
 
+	// GetLatestAcceptedForStream returns the latest Accepted release for a specific stream
+	// by calling /api/v1/releasestream/{stream}/latest
+	GetLatestAcceptedForStream(ctx context.Context, streamName string) (*Tag, error)
+
 	// GetStreamStats returns statistics for all release streams
 	GetStreamStats(ctx context.Context) ([]StreamStats, error)
 

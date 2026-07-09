@@ -38,6 +38,16 @@ func TestReleaseWatcher_DetectsNewReleases(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(resp)
 
+		case "/api/v1/releasestream/4-stable/latest":
+			// Latest Accepted release is the predecessor of the new Ready release
+			resp := rc.Tag{
+				Name:     "4.18.2",
+				Phase:    "Accepted",
+				PullSpec: "registry.ci.openshift.org/ocp/release:4.18.2",
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(resp)
+
 		case "/api/v1/releasestreams/all":
 			resp := map[string][]string{
 				"4-stable": {"4.18.3", "4.18.2", "4.18.1", "4.18.0"},

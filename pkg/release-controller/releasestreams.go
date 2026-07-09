@@ -89,6 +89,19 @@ func (c *client) GetLatestReleaseForStream(ctx context.Context, streamName strin
 	return releases[0], nil
 }
 
+// GetLatestAcceptedForStream returns the latest Accepted release for a specific stream
+// by calling the /api/v1/releasestream/{stream}/latest endpoint.
+func (c *client) GetLatestAcceptedForStream(ctx context.Context, streamName string) (*Tag, error) {
+	path := fmt.Sprintf("/api/v1/releasestream/%s/latest", streamName)
+
+	var tag Tag
+	if err := c.GetJSON(ctx, path, &tag); err != nil {
+		return nil, fmt.Errorf("failed to get latest accepted release for stream %s: %w", streamName, err)
+	}
+
+	return &tag, nil
+}
+
 // StreamStats contains statistics about a release stream
 type StreamStats struct {
 	Name          string
