@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/blang/semver/v4"
@@ -28,6 +29,7 @@ type Options struct {
 	controllerContext *controllercmd.ControllerContext
 	controller        *ReleasePayloadChangelogController
 	cache             *ChangelogCache
+	extractor         *ReleaseExtractor
 	rcClient          *rc.MultiClient
 
 	// HTTP server configuration
@@ -779,10 +781,28 @@ func (o *Options) Run(ctx context.Context) error {
 		}()
 	}
 
+	// Initialize snapshot storage for per-release extraction
+	var snapshotStorage storage.ReleaseSnapshotStorage
+	if o.filesystemEnabled {
+		snapshotDir := filepath.Join(o.filesystemBaseDir, "snapshots")
+		ss, err := filesystem.NewSnapshotStorage(ctx, snapshotDir)
+		if err != nil {
+			klog.Warningf("Failed to initialize snapshot storage: %v", err)
+		} else {
+			snapshotStorage = ss
+			klog.Infof("Snapshot storage initialized at %s", snapshotDir)
+		}
+	}
+
+	o.extractor = NewReleaseExtractor(snapshotStorage)
+
 	// Warm cache from storage backends if enabled
 	if o.cacheWarmingEnabled {
 		if err := o.warmCache(ctx, storages); err != nil {
 			klog.Warningf("Failed to warm cache: %v", err)
+		}
+		if err := o.extractor.WarmCache(ctx); err != nil {
+			klog.Warningf("Failed to warm snapshot cache: %v", err)
 		}
 	}
 
@@ -806,7 +826,7 @@ func (o *Options) Run(ctx context.Context) error {
 
 	// Start the release watcher if enabled and client is available
 	if o.watcherEnabled && o.rcClient != nil {
-		watcher := NewReleaseWatcher(o.rcClient, releasePayloadChangelogController, o.watcherPollInterval)
+		watcher := NewReleaseWatcher(o.rcClient, releasePayloadChangelogController, o.extractor, o.watcherPollInterval)
 		go watcher.Run(ctx)
 	} else if o.watcherEnabled {
 		klog.Warning("Release watcher enabled but release-controller client not available, skipping")
