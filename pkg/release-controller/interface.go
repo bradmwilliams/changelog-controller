@@ -18,6 +18,10 @@ type Client interface {
 	// Returns a map of stream names to their list of releases
 	GetAllReleaseStreams(ctx context.Context) (AllReleaseStreamsResponse, error)
 
+	// GetReadyReleaseStreams fetches release streams with releases in the Ready phase
+	// from /api/v1/releasestreams/ready
+	GetReadyReleaseStreams(ctx context.Context) (AllReleaseStreamsResponse, error)
+
 	// GetReleaseStreamNames returns the names of all available release streams
 	// (e.g., "4-stable", "4.11.0-0.nightly", "4-dev-preview")
 	GetReleaseStreamNames(ctx context.Context) ([]string, error)
@@ -27,6 +31,10 @@ type Client interface {
 
 	// GetLatestReleaseForStream returns the first (most recent) release for a specific stream
 	GetLatestReleaseForStream(ctx context.Context, streamName string) (string, error)
+
+	// GetLatestAcceptedForStream returns the latest Accepted release for a specific stream
+	// by calling /api/v1/releasestream/{stream}/latest
+	GetLatestAcceptedForStream(ctx context.Context, streamName string) (*Tag, error)
 
 	// GetStreamStats returns statistics for all release streams
 	GetStreamStats(ctx context.Context) ([]StreamStats, error)

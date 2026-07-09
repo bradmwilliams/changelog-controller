@@ -30,6 +30,16 @@ func (c *client) GetAllReleaseStreams(ctx context.Context) (AllReleaseStreamsRes
 	return result, nil
 }
 
+// GetReadyReleaseStreams fetches release streams with releases in the Ready phase
+// This calls the /api/v1/releasestreams/ready endpoint
+func (c *client) GetReadyReleaseStreams(ctx context.Context) (AllReleaseStreamsResponse, error) {
+	var result AllReleaseStreamsResponse
+	if err := c.GetJSON(ctx, "/api/v1/releasestreams/ready", &result); err != nil {
+		return nil, fmt.Errorf("failed to get ready release streams: %w", err)
+	}
+	return result, nil
+}
+
 // GetReleaseStreamNames returns the names of all available release streams
 // Examples: "4-stable", "4-dev-preview", "4.11.0-0.nightly", "4.14.0-0.ci"
 func (c *client) GetReleaseStreamNames(ctx context.Context) ([]string, error) {
@@ -77,6 +87,19 @@ func (c *client) GetLatestReleaseForStream(ctx context.Context, streamName strin
 	}
 
 	return releases[0], nil
+}
+
+// GetLatestAcceptedForStream returns the latest Accepted release for a specific stream
+// by calling the /api/v1/releasestream/{stream}/latest endpoint.
+func (c *client) GetLatestAcceptedForStream(ctx context.Context, streamName string) (*Tag, error) {
+	path := fmt.Sprintf("/api/v1/releasestream/%s/latest", streamName)
+
+	var tag Tag
+	if err := c.GetJSON(ctx, path, &tag); err != nil {
+		return nil, fmt.Errorf("failed to get latest accepted release for stream %s: %w", streamName, err)
+	}
+
+	return &tag, nil
 }
 
 // StreamStats contains statistics about a release stream

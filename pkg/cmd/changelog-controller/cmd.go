@@ -50,6 +50,10 @@ type Options struct {
 
 	// Cache warming
 	cacheWarmingEnabled bool
+
+	// Release watcher
+	watcherEnabled      bool
+	watcherPollInterval time.Duration
 }
 
 func NewReleasePayloadChangelogControllerCommand(name string) *cobra.Command {
@@ -110,6 +114,12 @@ func (o *Options) AddFlags(fs *pflag.FlagSet) {
 	// Cache warming flag
 	fs.BoolVar(&o.cacheWarmingEnabled, "cache-warming-enabled", getEnvBool("CACHE_WARMING_ENABLED", true),
 		"Enable cache warming from storage backends on startup (enabled by default)")
+
+	// Release watcher flags
+	fs.BoolVar(&o.watcherEnabled, "watcher-enabled", getEnvBool("WATCHER_ENABLED", true),
+		"Enable release watcher that polls for newly ready releases (enabled by default)")
+	fs.DurationVar(&o.watcherPollInterval, "watcher-poll-interval", getEnvDuration("WATCHER_POLL_INTERVAL", 2*time.Minute),
+		"How often the release watcher polls for new ready releases (can also use WATCHER_POLL_INTERVAL env var)")
 }
 
 // getEnv returns the value of an environment variable or a default value
@@ -124,6 +134,17 @@ func getEnv(key, defaultValue string) string {
 func getEnvBool(key string, defaultValue bool) bool {
 	if value := os.Getenv(key); value != "" {
 		return value == "true" || value == "1" || value == "yes"
+	}
+	return defaultValue
+}
+
+// getEnvDuration returns the duration value of an environment variable or a default value
+func getEnvDuration(key string, defaultValue time.Duration) time.Duration {
+	if value := os.Getenv(key); value != "" {
+		d, err := time.ParseDuration(value)
+		if err == nil {
+			return d
+		}
 	}
 	return defaultValue
 }
@@ -782,6 +803,14 @@ func (o *Options) Run(ctx context.Context) error {
 
 	// Run the Controllers
 	go releasePayloadChangelogController.RunWorkers(ctx, 10)
+
+	// Start the release watcher if enabled and client is available
+	if o.watcherEnabled && o.rcClient != nil {
+		watcher := NewReleaseWatcher(o.rcClient, releasePayloadChangelogController, o.watcherPollInterval)
+		go watcher.Run(ctx)
+	} else if o.watcherEnabled {
+		klog.Warning("Release watcher enabled but release-controller client not available, skipping")
+	}
 
 	// Wait for context cancellation or HTTP server error
 	select {
