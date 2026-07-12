@@ -10,9 +10,10 @@ import (
 // stored when a release enters the Ready phase so that future diff
 // requests can use the data without re-running oc
 type ReleaseSnapshot struct {
-	PullSpec    string          `json:"pullSpec"`
-	Manifest    json.RawMessage `json:"manifest"`
-	ExtractedAt time.Time       `json:"extractedAt"`
+	PullSpec    string            `json:"pullSpec"`
+	Manifest    json.RawMessage   `json:"manifest"`
+	RPMPackages map[string]string `json:"rpmPackages,omitempty"`
+	ExtractedAt time.Time         `json:"extractedAt"`
 }
 
 // ReleaseSnapshotStorage defines the interface for storing and retrieving

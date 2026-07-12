@@ -14,7 +14,8 @@ import (
 )
 
 // ReleaseExtractor extracts and caches per-release metadata by running
-// oc adm release info -o json against a release pull spec
+// oc adm release info against a release pull spec to collect its
+// component manifest and RPM package list
 type ReleaseExtractor struct {
 	mu      sync.RWMutex
 	cache   map[string]*storage.ReleaseSnapshot
@@ -57,8 +58,9 @@ func (e *ReleaseExtractor) Get(ctx context.Context, pullSpec string) (*storage.R
 	return nil, false
 }
 
-// Extract runs oc adm release info -o json for the given pull spec and
-// stores the result. If the snapshot is already cached, this is a no-op
+// Extract runs oc adm release info to collect the component manifest and
+// RPM package list for the given pull spec. If the snapshot is already
+// cached, this is a no-op
 func (e *ReleaseExtractor) Extract(ctx context.Context, pullSpec string) error {
 	if _, found := e.Get(ctx, pullSpec); found {
 		klog.V(4).Infof("Extractor: snapshot already cached for %s", pullSpec)
@@ -67,13 +69,14 @@ func (e *ReleaseExtractor) Extract(ctx context.Context, pullSpec string) error {
 
 	klog.V(4).Infof("Extractor: extracting release metadata for %s", pullSpec)
 
-	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
 	oc, err := exec.LookPath("oc")
 	if err != nil {
 		return fmt.Errorf("failed to find oc: %w", err)
 	}
 
-	cmd := exec.CommandContext(ctx, oc, "adm", "release", "info", "-o", "json", pullSpec)
+	// Extract component manifest
+	out, errOut := &bytes.Buffer{}, &bytes.Buffer{}
+	cmd := exec.CommandContext(ctx, oc, "adm", "release", "info", "--output=json", pullSpec)
 	cmd.Stdout = out
 	cmd.Stderr = errOut
 	klog.V(4).Infof("Extractor: running %s", cmd.String())
@@ -94,6 +97,28 @@ func (e *ReleaseExtractor) Extract(ctx context.Context, pullSpec string) error {
 		PullSpec:    pullSpec,
 		Manifest:    json.RawMessage(out.Bytes()),
 		ExtractedAt: time.Now(),
+	}
+
+	// Extract RPM package list (best-effort)
+	rpmOut, rpmErrOut := &bytes.Buffer{}, &bytes.Buffer{}
+	rpmCmd := exec.CommandContext(ctx, oc, "adm", "release", "info", "--rpmdb-cache=/tmp/rpmdb/", "--output=json", "--rpmdb", pullSpec)
+	rpmCmd.Stdout = rpmOut
+	rpmCmd.Stderr = rpmErrOut
+	klog.V(4).Infof("Extractor: running %s", rpmCmd.String())
+
+	if err := rpmCmd.Run(); err != nil {
+		msg := rpmErrOut.String()
+		if len(msg) == 0 {
+			msg = err.Error()
+		}
+		klog.Warningf("Extractor: rpmdb extraction failed for %s: %s", pullSpec, msg)
+	} else {
+		var packages map[string]string
+		if err := json.Unmarshal(rpmOut.Bytes(), &packages); err != nil {
+			klog.Warningf("Extractor: failed to unmarshal rpmdb output for %s: %v", pullSpec, err)
+		} else {
+			snapshot.RPMPackages = packages
+		}
 	}
 
 	e.mu.Lock()
