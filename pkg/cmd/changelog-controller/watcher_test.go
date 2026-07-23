@@ -94,7 +94,7 @@ func TestReleaseWatcher_DetectsNewReleases(t *testing.T) {
 	controller := NewReleasePayloadChangelogController(recorder, cache)
 
 	// Create watcher with short poll interval for testing
-	watcher := NewReleaseWatcher(mcClient, controller, 100*time.Millisecond)
+	watcher := NewReleaseWatcher(mcClient, controller, nil, 100*time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -167,7 +167,7 @@ func TestReleaseWatcher_NoDuplicateEnqueue(t *testing.T) {
 	recorder := events.NewInMemoryRecorder("test", clock.RealClock{})
 	cache := NewChangelogCache()
 	controller := NewReleasePayloadChangelogController(recorder, cache)
-	watcher := NewReleaseWatcher(mcClient, controller, 100*time.Millisecond)
+	watcher := NewReleaseWatcher(mcClient, controller, nil, 100*time.Millisecond)
 
 	ctx := context.Background()
 
