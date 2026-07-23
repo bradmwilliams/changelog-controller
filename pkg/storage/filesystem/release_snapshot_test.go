@@ -41,9 +41,11 @@ func TestSnapshotStorage_GetSet(t *testing.T) {
 	rpmPkgs := map[string]string{"kernel": "5.14.0-427.el9", "cri-o": "1.30.0-1.el9"}
 	now := time.Now().Truncate(time.Second)
 	snapshot := &storage.ReleaseSnapshot{
-		PullSpec:    pullSpec,
-		Manifest:    manifest,
-		RPMPackages: rpmPkgs,
+		PullSpec: pullSpec,
+		Manifest: manifest,
+		RPMList: &storage.RpmList{
+			Packages: rpmPkgs,
+		},
 		ExtractedAt: now,
 	}
 
@@ -65,12 +67,15 @@ func TestSnapshotStorage_GetSet(t *testing.T) {
 	if string(snap.Manifest) != string(manifest) {
 		t.Errorf("Get() manifest mismatch")
 	}
-	if len(snap.RPMPackages) != len(rpmPkgs) {
-		t.Errorf("Get() RPMPackages has %d entries, want %d", len(snap.RPMPackages), len(rpmPkgs))
+	if snap.RPMList == nil {
+		t.Fatal("Get() RPMList is nil")
+	}
+	if len(snap.RPMList.Packages) != len(rpmPkgs) {
+		t.Errorf("Get() RPMList.Packages has %d entries, want %d", len(snap.RPMList.Packages), len(rpmPkgs))
 	}
 	for pkg, ver := range rpmPkgs {
-		if snap.RPMPackages[pkg] != ver {
-			t.Errorf("Get() RPMPackages[%q] = %q, want %q", pkg, snap.RPMPackages[pkg], ver)
+		if snap.RPMList.Packages[pkg] != ver {
+			t.Errorf("Get() RPMList.Packages[%q] = %q, want %q", pkg, snap.RPMList.Packages[pkg], ver)
 		}
 	}
 }

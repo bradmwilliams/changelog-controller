@@ -113,11 +113,11 @@ func (e *ReleaseExtractor) Extract(ctx context.Context, pullSpec string) error {
 		}
 		klog.Warningf("Extractor: rpmdb extraction failed for %s: %s", pullSpec, msg)
 	} else {
-		var packages map[string]string
-		if err := json.Unmarshal(rpmOut.Bytes(), &packages); err != nil {
+		var rpmList storage.RpmList
+		if err := json.Unmarshal(rpmOut.Bytes(), &rpmList); err != nil {
 			klog.Warningf("Extractor: failed to unmarshal rpmdb output for %s: %v", pullSpec, err)
 		} else {
-			snapshot.RPMPackages = packages
+			snapshot.RPMList = &rpmList
 		}
 	}
 

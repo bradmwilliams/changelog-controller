@@ -389,6 +389,11 @@ func (c *ReleasePayloadChangelogController) sync(ctx context.Context, req Change
 	}
 
 	klog.V(4).Infof("Finished running changelog command: %s", cmd.String())
+
+	if out.Len() == 0 {
+		return fmt.Errorf("oc produced no output for %s -> %s", req.From, req.To)
+	}
+
 	c.cache.Set(ctx, req.From, req.To, out.String())
 	return nil
 }

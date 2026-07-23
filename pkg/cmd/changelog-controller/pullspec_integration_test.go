@@ -101,7 +101,7 @@ func TestPullSpecIntegration(t *testing.T) {
 		toPS := "quay.io/openshift-release-dev/ocp-release:4.21.10-x86_64"
 		changelog := "# Release 4.21.10\n\nBug fixes"
 
-		opts.writeChangelogResponse(w, "4.21.9", "4.21.10", changelog, "json", fromPS, toPS)
+		opts.writeChangelogResponse(w, "4.21.9", "4.21.10", changelog, "json", fromPS, toPS, nil)
 
 		resp := w.Result()
 		defer resp.Body.Close()
@@ -132,45 +132,12 @@ func TestPullSpecIntegration(t *testing.T) {
 		}
 	})
 
-	// Test markdown response with PullSpecs
-	t.Run("markdown response with pullspecs", func(t *testing.T) {
-		w := httptest.NewRecorder()
-		fromPS := "quay.io/openshift-release-dev/ocp-release:4.21.9-x86_64"
-		toPS := "quay.io/openshift-release-dev/ocp-release:4.21.10-x86_64"
-		changelog := "# Release 4.21.10\n\nBug fixes"
-
-		opts.writeChangelogResponse(w, "4.21.9", "4.21.10", changelog, "md", fromPS, toPS)
-
-		resp := w.Result()
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			t.Errorf("expected status 200, got %d", resp.StatusCode)
-		}
-
-		body := w.Body.String()
-
-		// Check for PullSpec comments in markdown
-		if !strings.Contains(body, "<!-- PullSpec Information -->") {
-			t.Error("markdown should contain PullSpec Information comment")
-		}
-		if !strings.Contains(body, "<!-- From: "+fromPS+" -->") {
-			t.Errorf("markdown should contain from pullspec comment")
-		}
-		if !strings.Contains(body, "<!-- To: "+toPS+" -->") {
-			t.Errorf("markdown should contain to pullspec comment")
-		}
-		if !strings.Contains(body, "# Release 4.21.10") {
-			t.Error("markdown should contain changelog content")
-		}
-	})
-
 	// Test graceful degradation without PullSpecs
 	t.Run("response without pullspecs", func(t *testing.T) {
 		w := httptest.NewRecorder()
 		changelog := "# Release 4.21.10\n\nBug fixes"
 
-		opts.writeChangelogResponse(w, "4.21.9", "4.21.10", changelog, "json", "", "")
+		opts.writeChangelogResponse(w, "4.21.9", "4.21.10", changelog, "json", "", "", nil)
 
 		resp := w.Result()
 		defer resp.Body.Close()

@@ -379,30 +379,30 @@ func (o *Options) handleRoot(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "      - arch: Architecture (amd64, arm64, s390x, ppc64le, or multi)\n")
 	fmt.Fprintf(w, "    Optional Parameters:\n")
 	fmt.Fprintf(w, "      - format: Response format ('json' or 'md', default: 'json')\n")
+	fmt.Fprintf(w, "    Notes:\n")
+	fmt.Fprintf(w, "      JSON responses include an 'rpmDiff' field when RPM package\n")
+	fmt.Fprintf(w, "      data has been pre-extracted for both releases\n")
 	fmt.Fprintf(w, "    Examples:\n")
 	fmt.Fprintf(w, "      /changelog?from=4.15.0&to=4.16.0&arch=amd64\n")
-	fmt.Fprintf(w, "      /changelog?from=4.15.0&to=4.16.0&arch=amd64&format=json\n")
 	fmt.Fprintf(w, "      /changelog?from=4.15.0&to=4.16.0&arch=arm64&format=md\n\n")
 	fmt.Fprintf(w, "  GET /status\n")
 	fmt.Fprintf(w, "    Description: Cache and storage backend status information\n")
 }
 
 func (o *Options) handleChangelog(w http.ResponseWriter, r *http.Request) {
-	// Parse query parameters
+	w.Header().Set("Content-Type", "application/json")
+
 	query := r.URL.Query()
 	from := query.Get("from")
 	to := query.Get("to")
 	arch := query.Get("arch")
 	format := query.Get("format")
 
-	// Default format to json if not specified
 	if format == "" {
 		format = "json"
 	}
 
-	// Validate format parameter
 	if format != "json" && format != "md" {
-		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		fmt.Fprintf(w, `{"error": "invalid format parameter: must be 'json' or 'md'"}`+"\n")
 		return
@@ -410,42 +410,21 @@ func (o *Options) handleChangelog(w http.ResponseWriter, r *http.Request) {
 
 	// Validate required parameters
 	if from == "" || to == "" || arch == "" {
-		if format == "json" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			if from == "" && to == "" && arch == "" {
-				fmt.Fprintf(w, `{"error": "missing required query parameters 'from', 'to', and 'arch'"}`+"\n")
-			} else if from == "" && to == "" {
-				fmt.Fprintf(w, `{"error": "missing required query parameters 'from' and 'to'"}`+"\n")
-			} else if from == "" && arch == "" {
-				fmt.Fprintf(w, `{"error": "missing required query parameters 'from' and 'arch'"}`+"\n")
-			} else if to == "" && arch == "" {
-				fmt.Fprintf(w, `{"error": "missing required query parameters 'to' and 'arch'"}`+"\n")
-			} else if from == "" {
-				fmt.Fprintf(w, `{"error": "missing required query parameter 'from'"}`+"\n")
-			} else if to == "" {
-				fmt.Fprintf(w, `{"error": "missing required query parameter 'to'"}`+"\n")
-			} else {
-				fmt.Fprintf(w, `{"error": "missing required query parameter 'arch'"}`+"\n")
-			}
+		w.WriteHeader(http.StatusBadRequest)
+		if from == "" && to == "" && arch == "" {
+			fmt.Fprintf(w, `{"error": "missing required query parameters 'from', 'to', and 'arch'"}`+"\n")
+		} else if from == "" && to == "" {
+			fmt.Fprintf(w, `{"error": "missing required query parameters 'from' and 'to'"}`+"\n")
+		} else if from == "" && arch == "" {
+			fmt.Fprintf(w, `{"error": "missing required query parameters 'from' and 'arch'"}`+"\n")
+		} else if to == "" && arch == "" {
+			fmt.Fprintf(w, `{"error": "missing required query parameters 'to' and 'arch'"}`+"\n")
+		} else if from == "" {
+			fmt.Fprintf(w, `{"error": "missing required query parameter 'from'"}`+"\n")
+		} else if to == "" {
+			fmt.Fprintf(w, `{"error": "missing required query parameter 'to'"}`+"\n")
 		} else {
-			w.Header().Set("Content-Type", "text/plain")
-			w.WriteHeader(http.StatusBadRequest)
-			if from == "" && to == "" && arch == "" {
-				fmt.Fprintf(w, "Error: missing required query parameters 'from', 'to', and 'arch'\n")
-			} else if from == "" && to == "" {
-				fmt.Fprintf(w, "Error: missing required query parameters 'from' and 'to'\n")
-			} else if from == "" && arch == "" {
-				fmt.Fprintf(w, "Error: missing required query parameters 'from' and 'arch'\n")
-			} else if to == "" && arch == "" {
-				fmt.Fprintf(w, "Error: missing required query parameters 'to' and 'arch'\n")
-			} else if from == "" {
-				fmt.Fprintf(w, "Error: missing required query parameter 'from'\n")
-			} else if to == "" {
-				fmt.Fprintf(w, "Error: missing required query parameter 'to'\n")
-			} else {
-				fmt.Fprintf(w, "Error: missing required query parameter 'arch'\n")
-			}
+			fmt.Fprintf(w, `{"error": "missing required query parameter 'arch'"}`+"\n")
 		}
 		return
 	}
@@ -459,41 +438,20 @@ func (o *Options) handleChangelog(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !validArch {
-		if format == "json" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprintf(w, `{"error": "invalid architecture '%s': must be one of 'amd64', 'arm64', 's390x', 'ppc64le', or 'multi'"}`+"\n", arch)
-		} else {
-			w.Header().Set("Content-Type", "text/plain")
-			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprintf(w, "Error: invalid architecture '%s': must be one of 'amd64', 'arm64', 's390x', 'ppc64le', or 'multi'\n", arch)
-		}
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprintf(w, `{"error": "invalid architecture '%s': must be one of 'amd64', 'arm64', 's390x', 'ppc64le', or 'multi'"}`+"\n", arch)
 		return
 	}
 
 	// Validate semver format
 	if _, err := semver.Parse(from); err != nil {
-		if format == "json" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprintf(w, `{"error": "'from' parameter is not a valid semantic version: %s"}`+"\n", from)
-		} else {
-			w.Header().Set("Content-Type", "text/plain")
-			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprintf(w, "Error: 'from' parameter is not a valid semantic version: %s\n", from)
-		}
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprintf(w, `{"error": "'from' parameter is not a valid semantic version: %s"}`+"\n", from)
 		return
 	}
 	if _, err := semver.Parse(to); err != nil {
-		if format == "json" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprintf(w, `{"error": "'to' parameter is not a valid semantic version: %s"}`+"\n", to)
-		} else {
-			w.Header().Set("Content-Type", "text/plain")
-			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprintf(w, "Error: 'to' parameter is not a valid semantic version: %s\n", to)
-		}
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprintf(w, `{"error": "'to' parameter is not a valid semantic version: %s"}`+"\n", to)
 		return
 	}
 
@@ -505,26 +463,13 @@ func (o *Options) handleChangelog(w http.ResponseWriter, r *http.Request) {
 	if fromPullSpec == "" || toPullSpec == "" {
 		klog.Warningf("Failed to fetch PullSpecs for from=%s (pullSpec=%s), to=%s (pullSpec=%s)",
 			from, fromPullSpec, to, toPullSpec)
-		if format == "json" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusNotFound)
-			if fromPullSpec == "" && toPullSpec == "" {
-				fmt.Fprintf(w, `{"error": "Could not find PullSpecs for releases '%s' and '%s'. Releases may not exist in any release-controller endpoint."}`+"\n", from, to)
-			} else if fromPullSpec == "" {
-				fmt.Fprintf(w, `{"error": "Could not find PullSpec for release '%s'. Release may not exist in any release-controller endpoint."}`+"\n", from)
-			} else {
-				fmt.Fprintf(w, `{"error": "Could not find PullSpec for release '%s'. Release may not exist in any release-controller endpoint."}`+"\n", to)
-			}
+		w.WriteHeader(http.StatusNotFound)
+		if fromPullSpec == "" && toPullSpec == "" {
+			fmt.Fprintf(w, `{"error": "Could not find PullSpecs for releases '%s' and '%s'. Releases may not exist in any release-controller endpoint."}`+"\n", from, to)
+		} else if fromPullSpec == "" {
+			fmt.Fprintf(w, `{"error": "Could not find PullSpec for release '%s'. Release may not exist in any release-controller endpoint."}`+"\n", from)
 		} else {
-			w.Header().Set("Content-Type", "text/plain")
-			w.WriteHeader(http.StatusNotFound)
-			if fromPullSpec == "" && toPullSpec == "" {
-				fmt.Fprintf(w, "Error: Could not find PullSpecs for releases '%s' and '%s'\n", from, to)
-			} else if fromPullSpec == "" {
-				fmt.Fprintf(w, "Error: Could not find PullSpec for release '%s'\n", from)
-			} else {
-				fmt.Fprintf(w, "Error: Could not find PullSpec for release '%s'\n", to)
-			}
+			fmt.Fprintf(w, `{"error": "Could not find PullSpec for release '%s'. Release may not exist in any release-controller endpoint."}`+"\n", to)
 		}
 		return
 	}
@@ -535,7 +480,8 @@ func (o *Options) handleChangelog(w http.ResponseWriter, r *http.Request) {
 	if o.cache != nil {
 		if cached, found := o.cache.Get(r.Context(), fromPullSpec, toPullSpec); found {
 			klog.V(4).Infof("Cache hit for %s -> %s", fromPullSpec, toPullSpec)
-			o.writeChangelogResponse(w, from, to, cached, format, fromPullSpec, toPullSpec)
+			rpmDiff := o.lookupRpmDiff(r.Context(), fromPullSpec, toPullSpec)
+			o.writeChangelogResponse(w, from, to, cached, format, fromPullSpec, toPullSpec, rpmDiff)
 			return
 		}
 		klog.V(4).Infof("Cache miss for %s -> %s", fromPullSpec, toPullSpec)
@@ -549,82 +495,104 @@ func (o *Options) handleChangelog(w http.ResponseWriter, r *http.Request) {
 		}
 		o.controller.Enqueue(req)
 
-		if format == "json" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusAccepted)
-			fmt.Fprintf(w, `{"status": "accepted", "message": "Changelog request queued for generation", "from": "%s", "to": "%s", "fromPullSpec": "%s", "toPullSpec": "%s"}`+"\n", from, to, fromPullSpec, toPullSpec)
-		} else {
-			w.Header().Set("Content-Type", "text/plain")
-			w.WriteHeader(http.StatusAccepted)
-			fmt.Fprintf(w, "Changelog request accepted and queued for generation:\n")
-			fmt.Fprintf(w, "  From: %s (%s)\n", from, fromPullSpec)
-			fmt.Fprintf(w, "  To: %s (%s)\n", to, toPullSpec)
-		}
-	} else {
-		if format == "json" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintf(w, `{"error": "controller not initialized"}`+"\n")
-		} else {
-			w.Header().Set("Content-Type", "text/plain")
-			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintf(w, "Error: controller not initialized\n")
-		}
-	}
-}
-
-func (o *Options) writeChangelogResponse(w http.ResponseWriter, from, to, changelog, format, fromPullSpec, toPullSpec string) {
-	if format == "json" {
-		var changelogField interface{}
-		if json.Valid([]byte(changelog)) {
-			changelogField = json.RawMessage(changelog)
-		} else {
-			changelogField = changelog
-		}
-
-		response := struct {
-			From         string      `json:"from"`
-			To           string      `json:"to"`
-			FromPullSpec string      `json:"fromPullSpec,omitempty"`
-			ToPullSpec   string      `json:"toPullSpec,omitempty"`
-			Changelog    interface{} `json:"changelog"`
+		w.WriteHeader(http.StatusAccepted)
+		accepted := struct {
+			Status       string `json:"status"`
+			Message      string `json:"message"`
+			From         string `json:"from"`
+			To           string `json:"to"`
+			FromPullSpec string `json:"fromPullSpec"`
+			ToPullSpec   string `json:"toPullSpec"`
 		}{
+			Status:       "accepted",
+			Message:      "Changelog request queued for generation",
 			From:         from,
 			To:           to,
 			FromPullSpec: fromPullSpec,
 			ToPullSpec:   toPullSpec,
-			Changelog:    changelogField,
 		}
-
-		data, err := json.Marshal(response)
-		if err != nil {
-			klog.Errorf("Failed to marshal changelog response: %v", err)
-			http.Error(w, "internal error", http.StatusInternalServerError)
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write(data)
-		fmt.Fprintf(w, "\n")
+		enc := json.NewEncoder(w)
+		enc.SetEscapeHTML(false)
+		enc.Encode(accepted)
 	} else {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, `{"error": "controller not initialized"}`+"\n")
+	}
+}
+
+func (o *Options) writeChangelogResponse(w http.ResponseWriter, from, to, changelog, format, fromPullSpec, toPullSpec string, rpmDiff *RpmDiff) {
+	// Unmarshal into typed struct; fall back to raw JSON if it doesn't match
+	var cl ChangeLog
+	var changelogField interface{}
+	structured := false
+	if err := json.Unmarshal([]byte(changelog), &cl); err == nil && cl.From.Name != "" && cl.To.Name != "" {
+		changelogField = &cl
+		structured = true
+	} else if json.Valid([]byte(changelog)) {
+		changelogField = json.RawMessage(changelog)
+	} else {
+		changelogField = changelog
+	}
+
+	if format == "md" {
 		w.Header().Set("Content-Type", "text/markdown")
 		w.WriteHeader(http.StatusOK)
 
-		// Add pullSpec information as comments at the top for markdown format
-		if fromPullSpec != "" || toPullSpec != "" {
-			fmt.Fprintf(w, "<!-- PullSpec Information -->\n")
-			if fromPullSpec != "" {
-				fmt.Fprintf(w, "<!-- From: %s -->\n", fromPullSpec)
-			}
-			if toPullSpec != "" {
-				fmt.Fprintf(w, "<!-- To: %s -->\n", toPullSpec)
-			}
-			fmt.Fprintf(w, "\n")
+		if structured {
+			fmt.Fprint(w, FormatChangeLogMarkdown(&cl))
+		} else {
+			fmt.Fprint(w, changelog)
 		}
 
-		fmt.Fprintf(w, "%s", changelog)
+		if rpmDiff != nil {
+			fmt.Fprint(w, FormatRpmDiffMarkdown(rpmDiff))
+		}
+		return
 	}
+
+	response := struct {
+		From         string      `json:"from"`
+		To           string      `json:"to"`
+		FromPullSpec string      `json:"fromPullSpec,omitempty"`
+		ToPullSpec   string      `json:"toPullSpec,omitempty"`
+		Changelog    interface{} `json:"changelog"`
+		RpmDiff      *RpmDiff    `json:"rpmDiff,omitempty"`
+	}{
+		From:         from,
+		To:           to,
+		FromPullSpec: fromPullSpec,
+		ToPullSpec:   toPullSpec,
+		Changelog:    changelogField,
+		RpmDiff:      rpmDiff,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(response); err != nil {
+		klog.Errorf("Failed to marshal changelog response: %v", err)
+	}
+}
+
+// lookupRpmDiff computes an RPM diff between two releases using cached
+// snapshot data. Returns nil if snapshots are unavailable for either release
+func (o *Options) lookupRpmDiff(ctx context.Context, fromPullSpec, toPullSpec string) *RpmDiff {
+	if o.extractor == nil {
+		return nil
+	}
+
+	fromSnap, ok := o.extractor.Get(ctx, fromPullSpec)
+	if !ok || fromSnap.RPMList == nil {
+		return nil
+	}
+
+	toSnap, ok := o.extractor.Get(ctx, toPullSpec)
+	if !ok || toSnap.RPMList == nil {
+		return nil
+	}
+
+	return ComputeRpmDiff(fromSnap.RPMList.Packages, toSnap.RPMList.Packages)
 }
 
 // fetchPullSpecs fetches PullSpecs for the given release versions

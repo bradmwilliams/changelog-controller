@@ -29,9 +29,11 @@ func TestReleaseExtractor_GetSetCache(t *testing.T) {
 
 	// Manually populate cache to test Get without running oc
 	extractor.cache[pullSpec] = &storage.ReleaseSnapshot{
-		PullSpec:    pullSpec,
-		Manifest:    json.RawMessage(`{"test": true}`),
-		RPMPackages: map[string]string{"kernel": "5.14.0-427.el9"},
+		PullSpec: pullSpec,
+		Manifest: json.RawMessage(`{"test": true}`),
+		RPMList: &storage.RpmList{
+			Packages: map[string]string{"kernel": "5.14.0-427.el9"},
+		},
 		ExtractedAt: time.Now(),
 	}
 
@@ -59,9 +61,11 @@ func TestReleaseExtractor_GetFromStorage(t *testing.T) {
 
 	// Write directly to storage (bypassing extractor)
 	snapshot := &storage.ReleaseSnapshot{
-		PullSpec:    pullSpec,
-		Manifest:    json.RawMessage(`{"stored": true}`),
-		RPMPackages: map[string]string{"cri-o": "1.30.0-1.el9"},
+		PullSpec: pullSpec,
+		Manifest: json.RawMessage(`{"stored": true}`),
+		RPMList: &storage.RpmList{
+			Packages: map[string]string{"cri-o": "1.30.0-1.el9"},
+		},
 		ExtractedAt: time.Now(),
 	}
 	if err := ss.Set(ctx, pullSpec, snapshot); err != nil {

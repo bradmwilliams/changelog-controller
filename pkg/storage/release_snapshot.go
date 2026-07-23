@@ -6,14 +6,21 @@ import (
 	"time"
 )
 
+// RpmList holds the RPM package and extension data returned by
+// oc adm release info --rpmdb --output=json
+type RpmList struct {
+	Packages   map[string]string `json:"packages"`
+	Extensions map[string]string `json:"extensions,omitempty"`
+}
+
 // ReleaseSnapshot holds pre-extracted metadata for a single release,
 // stored when a release enters the Ready phase so that future diff
 // requests can use the data without re-running oc
 type ReleaseSnapshot struct {
-	PullSpec    string            `json:"pullSpec"`
-	Manifest    json.RawMessage   `json:"manifest"`
-	RPMPackages map[string]string `json:"rpmPackages,omitempty"`
-	ExtractedAt time.Time         `json:"extractedAt"`
+	PullSpec    string          `json:"pullSpec"`
+	Manifest    json.RawMessage `json:"manifest"`
+	RPMList     *RpmList        `json:"rpmList,omitempty"`
+	ExtractedAt time.Time       `json:"extractedAt"`
 }
 
 // ReleaseSnapshotStorage defines the interface for storing and retrieving
