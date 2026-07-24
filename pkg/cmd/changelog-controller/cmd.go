@@ -56,6 +56,9 @@ type Options struct {
 	// Release watcher
 	watcherEnabled      bool
 	watcherPollInterval time.Duration
+
+	// Worker count
+	workerCount int
 }
 
 func NewReleasePayloadChangelogControllerCommand(name string) *cobra.Command {
@@ -122,6 +125,10 @@ func (o *Options) AddFlags(fs *pflag.FlagSet) {
 		"Enable release watcher that polls for newly ready releases (enabled by default)")
 	fs.DurationVar(&o.watcherPollInterval, "watcher-poll-interval", getEnvDuration("WATCHER_POLL_INTERVAL", 2*time.Minute),
 		"How often the release watcher polls for new ready releases (can also use WATCHER_POLL_INTERVAL env var)")
+
+	// Worker count flag
+	fs.IntVar(&o.workerCount, "workers", getEnvInt("WORKERS", 10),
+		"Number of changelog generation workers (can also use WORKERS env var)")
 }
 
 // getEnv returns the value of an environment variable or a default value
@@ -166,6 +173,11 @@ func (o *Options) Validate(ctx context.Context) error {
 	// Validate HTTP port
 	if o.httpPort < 1 || o.httpPort > 65535 {
 		return fmt.Errorf("http-port must be between 1 and 65535, got %d", o.httpPort)
+	}
+
+	// Validate worker count
+	if o.workerCount < 1 {
+		return fmt.Errorf("workers must be at least 1, got %d", o.workerCount)
 	}
 
 	// Validate BigQuery configuration if enabled
@@ -481,7 +493,7 @@ func (o *Options) handleChangelog(w http.ResponseWriter, r *http.Request) {
 		if cached, found := o.cache.Get(r.Context(), fromPullSpec, toPullSpec); found {
 			klog.V(4).Infof("Cache hit for %s -> %s", fromPullSpec, toPullSpec)
 			rpmDiff := o.lookupRpmDiff(r.Context(), fromPullSpec, toPullSpec)
-			o.writeChangelogResponse(w, from, to, cached, format, fromPullSpec, toPullSpec, rpmDiff)
+			o.writeChangelogResponse(w, from, to, cached, format, arch, fromPullSpec, toPullSpec, rpmDiff)
 			return
 		}
 		klog.V(4).Infof("Cache miss for %s -> %s", fromPullSpec, toPullSpec)
@@ -520,12 +532,13 @@ func (o *Options) handleChangelog(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (o *Options) writeChangelogResponse(w http.ResponseWriter, from, to, changelog, format, fromPullSpec, toPullSpec string, rpmDiff *RpmDiff) {
+func (o *Options) writeChangelogResponse(w http.ResponseWriter, from, to, changelog, format, arch, fromPullSpec, toPullSpec string, rpmDiff *RpmDiff) {
 	// Unmarshal into typed struct; fall back to raw JSON if it doesn't match
 	var cl ChangeLog
 	var changelogField interface{}
 	structured := false
 	if err := json.Unmarshal([]byte(changelog), &cl); err == nil && cl.From.Name != "" && cl.To.Name != "" {
+		enrichCoreOSComponents(&cl, arch)
 		changelogField = &cl
 		structured = true
 	} else if json.Valid([]byte(changelog)) {
@@ -790,7 +803,7 @@ func (o *Options) Run(ctx context.Context) error {
 	kubeFactory.Start(ctx.Done())
 
 	// Run the Controllers
-	go releasePayloadChangelogController.RunWorkers(ctx, 10)
+	go releasePayloadChangelogController.RunWorkers(ctx, o.workerCount)
 
 	// Start the release watcher if enabled and client is available
 	if o.watcherEnabled && o.rcClient != nil {

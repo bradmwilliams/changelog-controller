@@ -54,6 +54,7 @@ func TestValidateHTTPPort(t *testing.T) {
 				httpPort:          tt.port,
 				filesystemEnabled: true,
 				filesystemBaseDir: "/tmp/test",
+				workerCount:       10,
 			}
 
 			err := opts.Validate(context.Background())
@@ -63,6 +64,39 @@ func TestValidateHTTPPort(t *testing.T) {
 			}
 			if !tt.expectError && err != nil {
 				t.Errorf("Expected no error for port %d, got: %v", tt.port, err)
+			}
+		})
+	}
+}
+
+func TestValidateWorkerCount(t *testing.T) {
+	tests := []struct {
+		name        string
+		workers     int
+		expectError bool
+	}{
+		{"valid default 10", 10, false},
+		{"valid minimum 1", 1, false},
+		{"invalid zero", 0, true},
+		{"invalid negative", -1, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := &Options{
+				httpPort:          8080,
+				filesystemEnabled: true,
+				filesystemBaseDir: "/tmp/test",
+				workerCount:       tt.workers,
+			}
+
+			err := opts.Validate(context.Background())
+
+			if tt.expectError && err == nil {
+				t.Errorf("Expected error for workers %d, got nil", tt.workers)
+			}
+			if !tt.expectError && err != nil {
+				t.Errorf("Expected no error for workers %d, got: %v", tt.workers, err)
 			}
 		})
 	}

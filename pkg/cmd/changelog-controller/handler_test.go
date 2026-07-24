@@ -322,7 +322,7 @@ func TestWriteChangelogResponse(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			w := httptest.NewRecorder()
-			opts.writeChangelogResponse(w, tt.from, tt.to, tt.changelog, tt.format, tt.fromPullSpec, tt.toPullSpec, nil)
+			opts.writeChangelogResponse(w, tt.from, tt.to, tt.changelog, tt.format, "amd64", tt.fromPullSpec, tt.toPullSpec, nil)
 
 			resp := w.Result()
 			defer resp.Body.Close()
@@ -350,7 +350,7 @@ func TestWriteChangelogResponse_StructuredJSON(t *testing.T) {
 	changelogJSON := `{"from":{"name":"4.18.2","created":"2026-01-01T00:00:00Z","digest":"sha256:abc"},"to":{"name":"4.18.3","created":"2026-01-02T00:00:00Z","digest":"sha256:def"},"components":[{"name":"Kubernetes","version":"v1.31.0","from":"v1.30.0"}],"updatedImages":[{"name":"cluster-etcd-operator","path":"https://github.com/openshift/cluster-etcd-operator","commits":[{"subject":"Fix backup","pullID":123}]}]}`
 
 	w := httptest.NewRecorder()
-	opts.writeChangelogResponse(w, "4.18.2", "4.18.3", changelogJSON, "json", "registry/from", "registry/to", nil)
+	opts.writeChangelogResponse(w, "4.18.2", "4.18.3", changelogJSON, "json", "amd64", "registry/from", "registry/to", nil)
 
 	resp := w.Result()
 	defer resp.Body.Close()
@@ -399,6 +399,40 @@ func TestWriteChangelogResponse_StructuredJSON(t *testing.T) {
 	}
 }
 
+func TestWriteChangelogResponse_CoreOSEnrichment(t *testing.T) {
+	opts := &Options{}
+
+	changelogJSON := `{"from":{"name":"4.18.2","created":"2026-01-01T00:00:00Z","digest":"sha256:abc"},"to":{"name":"4.18.3","created":"2026-01-02T00:00:00Z","digest":"sha256:def"},"components":[{"name":"Red Hat Enterprise Linux CoreOS","version":"418.94.202501010000-0","from":"418.94.202412010000-0"},{"name":"Kubernetes","version":"v1.31.0","from":"v1.30.0"}]}`
+
+	w := httptest.NewRecorder()
+	opts.writeChangelogResponse(w, "4.18.2", "4.18.3", changelogJSON, "json", "amd64", "registry/from", "registry/to", nil)
+
+	body := w.Body.String()
+
+	// RHCOS component should have enrichment URLs
+	if !strings.Contains(body, "releases-rhcos") {
+		t.Error("expected RHCOS release browser URL in response")
+	}
+	if !strings.Contains(body, "versionUrl") {
+		t.Error("expected versionUrl field in RHCOS component")
+	}
+	if !strings.Contains(body, "diff.html") {
+		t.Error("expected diff URL in RHCOS component")
+	}
+
+	// Kubernetes component should not have URLs
+	var result map[string]interface{}
+	if err := json.NewDecoder(strings.NewReader(body)).Decode(&result); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	changelog := result["changelog"].(map[string]interface{})
+	components := changelog["components"].([]interface{})
+	k8s := components[1].(map[string]interface{})
+	if _, ok := k8s["versionUrl"]; ok {
+		t.Error("Kubernetes component should not have versionUrl")
+	}
+}
+
 func TestWriteChangelogResponse_FallbackForNonChangelogJSON(t *testing.T) {
 	opts := &Options{}
 
@@ -406,7 +440,7 @@ func TestWriteChangelogResponse_FallbackForNonChangelogJSON(t *testing.T) {
 	arbitraryJSON := `{"key":"value","nested":{"a":1}}`
 
 	w := httptest.NewRecorder()
-	opts.writeChangelogResponse(w, "1.0.0", "2.0.0", arbitraryJSON, "json", "", "", nil)
+	opts.writeChangelogResponse(w, "1.0.0", "2.0.0", arbitraryJSON, "json", "amd64", "", "", nil)
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(w.Result().Body).Decode(&result); err != nil {
