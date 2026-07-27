@@ -14,6 +14,7 @@ import (
 	"github.com/bradmwilliams/changelog-controller/pkg/storage"
 	"github.com/bradmwilliams/changelog-controller/pkg/storage/bigquery"
 	"github.com/bradmwilliams/changelog-controller/pkg/storage/filesystem"
+	"github.com/bradmwilliams/changelog-controller/pkg/storage/firestore"
 	"github.com/bradmwilliams/changelog-controller/pkg/storage/sqlite"
 	"github.com/bradmwilliams/changelog-controller/pkg/version"
 	"github.com/openshift/library-go/pkg/controller/controllercmd"
@@ -45,6 +46,12 @@ type Options struct {
 	// SQLite storage
 	sqliteEnabled      bool
 	sqliteDatabasePath string
+
+	// Firestore storage
+	firestoreEnabled      bool
+	firestoreProjectID    string
+	firestoreDatabaseID   string
+	firestoreCollectionID string
 
 	// Filesystem storage
 	filesystemEnabled bool
@@ -109,6 +116,16 @@ func (o *Options) AddFlags(fs *pflag.FlagSet) {
 		"Enable SQLite storage backend")
 	fs.StringVar(&o.sqliteDatabasePath, "sqlite-database-path", getEnv("SQLITE_DATABASE_PATH", "/var/lib/changelogs.db"),
 		"SQLite database file path (can also use SQLITE_DATABASE_PATH env var)")
+
+	// Firestore storage flags
+	fs.BoolVar(&o.firestoreEnabled, "firestore-enabled", getEnvBool("FIRESTORE_ENABLED", false),
+		"Enable Firestore storage backend")
+	fs.StringVar(&o.firestoreProjectID, "firestore-project-id", getEnv("FIRESTORE_PROJECT_ID", ""),
+		"Firestore project ID (can also use FIRESTORE_PROJECT_ID env var)")
+	fs.StringVar(&o.firestoreDatabaseID, "firestore-database-id", getEnv("FIRESTORE_DATABASE_ID", ""),
+		"Firestore database ID (can also use FIRESTORE_DATABASE_ID env var, defaults to the (default) database)")
+	fs.StringVar(&o.firestoreCollectionID, "firestore-collection-id", getEnv("FIRESTORE_COLLECTION_ID", "changelogs"),
+		"Firestore collection ID (can also use FIRESTORE_COLLECTION_ID env var)")
 
 	// Filesystem storage flags
 	fs.BoolVar(&o.filesystemEnabled, "filesystem-enabled", getEnvBool("FILESYSTEM_ENABLED", true),
@@ -200,6 +217,16 @@ func (o *Options) Validate(ctx context.Context) error {
 		}
 	}
 
+	// Validate Firestore configuration if enabled
+	if o.firestoreEnabled {
+		if o.firestoreProjectID == "" {
+			return fmt.Errorf("firestore-project-id is required when Firestore storage is enabled")
+		}
+		if o.firestoreCollectionID == "" {
+			return fmt.Errorf("firestore-collection-id is required when Firestore storage is enabled")
+		}
+	}
+
 	// Validate Filesystem configuration if enabled
 	if o.filesystemEnabled {
 		if o.filesystemBaseDir == "" {
@@ -252,6 +279,28 @@ func (o *Options) initializeStorageBackends(ctx context.Context) ([]storage.Chan
 				}
 			})
 			klog.Infof("SQLite storage initialized successfully")
+		}
+	}
+
+	// Initialize Firestore storage if enabled
+	if o.firestoreEnabled {
+		klog.Infof("Initializing Firestore storage (project=%s, database=%s, collection=%s)",
+			o.firestoreProjectID, o.firestoreDatabaseID, o.firestoreCollectionID)
+		firestoreStorage, err := firestore.NewFirestoreStorage(ctx, firestore.Config{
+			ProjectID:    o.firestoreProjectID,
+			DatabaseID:   o.firestoreDatabaseID,
+			CollectionID: o.firestoreCollectionID,
+		})
+		if err != nil {
+			klog.Warningf("Failed to initialize Firestore storage: %v", err)
+		} else {
+			storages = append(storages, firestoreStorage)
+			cleanupFuncs = append(cleanupFuncs, func() {
+				if err := firestoreStorage.Close(); err != nil {
+					klog.Warningf("Failed to close Firestore storage: %v", err)
+				}
+			})
+			klog.Infof("Firestore storage initialized successfully")
 		}
 	}
 

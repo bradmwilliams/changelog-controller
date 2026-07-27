@@ -4,11 +4,12 @@ This guide explains how to configure the Release Payload Changelog Controller, i
 
 ## Storage Backend Configuration
 
-The controller supports three storage backends that can be enabled individually or in combination:
+The controller supports four storage backends that can be enabled individually or in combination:
 
 1. **Filesystem Storage** (enabled by default)
 2. **SQLite Storage**
 3. **BigQuery Storage**
+4. **Firestore Storage**
 
 ### Configuration Methods
 
@@ -164,6 +165,59 @@ export BIGQUERY_TABLE_ID=release_changelogs
 
 ---
 
+## Firestore Storage
+
+**Default**: Disabled
+
+Cloud-based document storage ideal for production deployments. Changelog content is gzip-compressed before being written to stay well under Firestore's 1 MiB per-document limit.
+
+### Command-Line Flags
+
+```bash
+./changelog-controller start \
+  --firestore-enabled=true \
+  --firestore-project-id=my-gcp-project \
+  --firestore-collection-id=changelogs
+```
+
+### Environment Variables
+
+```bash
+export FIRESTORE_ENABLED=true
+export FIRESTORE_PROJECT_ID=my-gcp-project
+export FIRESTORE_COLLECTION_ID=changelogs
+./changelog-controller start
+```
+
+### Configuration Options
+
+| Flag | Environment Variable | Default | Description |
+|------|---------------------|---------|-------------|
+| `--firestore-enabled` | `FIRESTORE_ENABLED` | `false` | Enable Firestore storage |
+| `--firestore-project-id` | `FIRESTORE_PROJECT_ID` | *(required)* | GCP project ID |
+| `--firestore-database-id` | `FIRESTORE_DATABASE_ID` | `(default)` | Firestore database ID |
+| `--firestore-collection-id` | `FIRESTORE_COLLECTION_ID` | `changelogs` | Firestore collection ID |
+
+### Prerequisites
+
+1. **GCP Authentication**: Set up application default credentials
+   ```bash
+   gcloud auth application-default login
+   # Or use service account
+   export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+   ```
+
+2. **Firestore Database**: A Firestore database in Native mode must already exist in the project; the collection itself is created automatically on first write. The database can be created through the [GCP Console](https://console.cloud.google.com/firestore/databases).
+
+### Notes
+
+- Requires GCP credentials
+- Documents are keyed by a hash of the `from`/`to` version pair
+- Scalable for production workloads
+- Firestore read/write costs apply based on usage
+
+---
+
 ## Multi-Backend Configuration
 
 Enable multiple storage backends for redundancy and failover.
@@ -295,6 +349,7 @@ The controller validates configuration on startup:
 
 - **BigQuery**: Requires `project-id` when enabled
 - **SQLite**: Requires `database-path` when enabled  
+- **Firestore**: Requires `project-id` and `collection-id` when enabled
 - **Filesystem**: Requires `base-dir` when enabled
 
 Invalid configuration will prevent startup with a descriptive error message.
@@ -340,6 +395,12 @@ The `/readyz` endpoint returns `200 OK` when the controller is ready, regardless
 ```bash
 export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
 ```
+
+### Firestore Connection Issues
+
+**Error**: `Failed to initialize Firestore storage: ... PermissionDenied`
+
+**Solution**: Ensure you are authenticated via `gcloud auth application-default login` and have access to the target GCP project.
 
 ### SQLite Permission Issues
 
@@ -389,10 +450,11 @@ export FILESYSTEM_ENABLED=true
 | Filesystem | ~1ms | ~1ms | Single node | Local disk |
 | SQLite | ~1-5ms | ~1-10ms | Single node | Local disk |
 | BigQuery | ~100-500ms | ~100-500ms | Unlimited | Cloud-grade |
+| Firestore | ~10-50ms | ~10-50ms | Unlimited | Cloud-grade |
 
 ### Recommendations
 
 - **Development**: Filesystem only (fastest, simplest)
 - **Single Instance**: SQLite + Filesystem (good balance)
-- **Multi Instance**: BigQuery + Filesystem (scalable, redundant)
-- **High Traffic**: BigQuery only (no local I/O bottlenecks)
+- **Multi Instance**: Firestore or BigQuery + Filesystem (scalable, redundant)
+- **High Traffic**: Firestore or BigQuery only (no local I/O bottlenecks)

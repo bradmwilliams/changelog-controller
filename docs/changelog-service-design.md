@@ -70,6 +70,7 @@ We should shift most of this work to happen earlier. As each release enters the 
   - **Filesystem:** Stores each changelog result as a file on disk, named by the image digest of the release pair. This is the default and simplest option, requiring no additional infrastructure.
   - **SQLite:** Stores results in a local database file, which allows the service to query stored changelogs by release tag, date, or other fields rather than only looking up by exact digest.
   - **BigQuery:** Writes results to a cloud-hosted database, making it possible to run queries across all historical changelogs from any machine, not just the server running the service.
+  - **Firestore:** Stores results as gzip-compressed documents in Google Cloud Firestore, providing low-latency cloud-based storage without requiring schema setup.
 3. **Async handling for cache misses.** Even with proactive extraction, data may not be available for every request, for example when the service first starts up or a release pair has never been seen before. Rather than making the caller wait while `oc` runs, the service should return `202 Accepted` immediately and queue the work in the background. The caller can retry the request once the data is ready.
 4. **Tag resolution.** Callers pass version tags like `4.15.0`, but `oc` requires full container image pull specs (e.g. `quay.io/openshift-release-dev/ocp-release@sha256:...`). Currently, `release-controller-api` resolves tags using in-process Kubernetes informers that watch the release ImageStreams on the `app.ci` cluster. Since the changelog service is a separate process, it does not have those informers. Instead, it should resolve tags by calling `release-controller-api`'s existing `/api/v1/releasestream/{stream}/release/{tag}` endpoint over HTTP, which returns the pull spec for a given tag.
 5. **Structured JSON only.** The service should deal exclusively in structured JSON. Rendering into other formats (markdown, HTML) is a presentation concern that belongs in a separate helper library or package, not in the service itself. This keeps the service focused on data production and allows consumers to choose their own rendering.
@@ -116,7 +117,7 @@ The new service will be built on top of the existing `changelog-controller` code
 | Async work queue (rate-limited, deduplicated)            | `controller.go`                       |
 | In-memory cache with hit/miss stats                      | `controller.go`                       |
 | Cache warming from storage on startup                    | `cmd.go:warmCache()`                  |
-| Filesystem, SQLite, and BigQuery storage backends        | `pkg/storage/`                        |
+| Filesystem, SQLite, BigQuery, and Firestore storage backends | `pkg/storage/`                        |
 | Storage abstraction interface                            | `pkg/storage/interface.go`            |
 
 

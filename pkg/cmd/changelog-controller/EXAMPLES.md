@@ -79,6 +79,31 @@ export FILESYSTEM_ENABLED=false
 
 ---
 
+## Production - Firestore
+
+### Firestore Only
+```bash
+export GOOGLE_APPLICATION_CREDENTIALS=/etc/gcp/service-account.json
+export FIRESTORE_ENABLED=true
+export FIRESTORE_PROJECT_ID=production-project
+export FIRESTORE_COLLECTION_ID=changelogs
+export FILESYSTEM_ENABLED=false
+
+./changelog-controller start
+```
+
+### Firestore + Local Backup
+```bash
+./changelog-controller start \
+  --firestore-enabled=true \
+  --firestore-project-id=production-project \
+  --firestore-collection-id=changelogs \
+  --filesystem-enabled=true \
+  --filesystem-base-dir=/mnt/backup/changelogs
+```
+
+---
+
 ## High Availability
 
 ### All Backends (Maximum Redundancy)
@@ -341,6 +366,29 @@ curl "http://localhost:8443/changelog?from=4.15.0&to=4.16.0&arch=amd64"
 # Query BigQuery
 bq query --use_legacy_sql=false \
   'SELECT * FROM test_changelogs.test_releases LIMIT 10'
+
+# Cleanup
+pkill -f changelog-controller
+```
+
+### Test Firestore Storage (requires GCP credentials)
+```bash
+# Set up credentials
+gcloud auth application-default login
+
+# Start controller
+./changelog-controller start \
+  --firestore-enabled=true \
+  --firestore-project-id=openshift-crt \
+  --firestore-database-id=changelog-controller \
+  --firestore-collection-id=changelogs \
+  --filesystem-enabled=false &
+
+# Wait for startup
+sleep 5
+
+# Test endpoint
+curl "http://localhost:8080/changelog?from=4.15.0&to=4.16.0&arch=amd64"
 
 # Cleanup
 pkill -f changelog-controller
