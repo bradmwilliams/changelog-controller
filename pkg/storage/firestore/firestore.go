@@ -1,8 +1,6 @@
 package firestore
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"fmt"
@@ -10,40 +8,45 @@ import (
 	"time"
 
 	"cloud.google.com/go/firestore"
+	gcs "cloud.google.com/go/storage"
 	"github.com/bradmwilliams/changelog-controller/pkg/storage"
 	"google.golang.org/api/iterator"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"k8s.io/klog/v2"
 )
 
-// FirestoreStorage implements changelog storage using Google Cloud Firestore
+// FirestoreStorage implements changelog storage using Firestore as an index
+// and GCS as the content store. Firestore documents hold version metadata and
+// a reference to the GCS object that contains the actual changelog.
 type FirestoreStorage struct {
-	projectID    string
 	collectionID string
-	client       *firestore.Client
+	bucketName   string
+	fsClient     *firestore.Client
+	gcsClient    *gcs.Client
 }
 
-// changelogDoc represents a document in the Firestore changelogs collection.
-// Changelog is stored gzip-compressed to stay well under Firestore's 1 MiB
-// per-document limit.
-type changelogDoc struct {
+// indexDoc represents a Firestore document that maps a version pair to a
+// GCS object containing the changelog content
+type indexDoc struct {
 	FromVersion string    `firestore:"fromVersion"`
 	ToVersion   string    `firestore:"toVersion"`
-	Changelog   []byte    `firestore:"changelog"`
+	ObjectPath  string    `firestore:"objectPath"`
 	CreatedAt   time.Time `firestore:"createdAt"`
 }
 
-// Config holds configuration for Firestore storage
+// Config holds configuration for Firestore + GCS storage
 type Config struct {
 	ProjectID    string
 	DatabaseID   string
 	CollectionID string
+	BucketName   string
 }
 
 var _ storage.ChangelogStorage = (*FirestoreStorage)(nil)
 var _ storage.ChangelogLister = (*FirestoreStorage)(nil)
 
-// NewFirestoreStorage creates a new Firestore storage backend
+// NewFirestoreStorage creates a new Firestore + GCS storage backend
 func NewFirestoreStorage(ctx context.Context, cfg Config) (*FirestoreStorage, error) {
 	if cfg.ProjectID == "" {
 		return nil, fmt.Errorf("projectID is required")
@@ -51,88 +54,119 @@ func NewFirestoreStorage(ctx context.Context, cfg Config) (*FirestoreStorage, er
 	if cfg.CollectionID == "" {
 		return nil, fmt.Errorf("collectionID is required")
 	}
+	if cfg.BucketName == "" {
+		return nil, fmt.Errorf("bucketName is required")
+	}
 
-	var client *firestore.Client
+	var fsClient *firestore.Client
 	var err error
 	if cfg.DatabaseID != "" {
-		client, err = firestore.NewClientWithDatabase(ctx, cfg.ProjectID, cfg.DatabaseID)
+		fsClient, err = firestore.NewClientWithDatabase(ctx, cfg.ProjectID, cfg.DatabaseID)
 	} else {
-		client, err = firestore.NewClient(ctx, cfg.ProjectID)
+		fsClient, err = firestore.NewClient(ctx, cfg.ProjectID)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Firestore client: %w", err)
 	}
 
+	gcsClient, err := gcs.NewClient(ctx)
+	if err != nil {
+		fsClient.Close()
+		return nil, fmt.Errorf("failed to create GCS client: %w", err)
+	}
+
 	return &FirestoreStorage{
-		projectID:    cfg.ProjectID,
 		collectionID: cfg.CollectionID,
-		client:       client,
+		bucketName:   cfg.BucketName,
+		fsClient:     fsClient,
+		gcsClient:    gcsClient,
 	}, nil
 }
 
-// docID generates a deterministic document ID for a given version range
-func docID(from, to string) string {
+// versionPairHash returns a truncated hex-encoded SHA-256 of the version pair
+func versionPairHash(from, to string) string {
 	key := fmt.Sprintf("%s->%s", from, to)
 	hash := sha256.Sum256([]byte(key))
 	return fmt.Sprintf("%x", hash[:16])
 }
 
-// Get retrieves a changelog from Firestore
+// objectPath generates a deterministic GCS object path for a version pair
+func objectPath(from, to string) string {
+	return fmt.Sprintf("changelogs/%s.json", versionPairHash(from, to))
+}
+
+// docID generates a deterministic Firestore document ID for a version pair
+func docID(from, to string) string {
+	return versionPairHash(from, to)
+}
+
+// Get retrieves a changelog by looking up its GCS location in Firestore
+// and fetching the content from GCS
 func (s *FirestoreStorage) Get(ctx context.Context, from, to string) (string, bool, error) {
-	snap, err := s.client.Collection(s.collectionID).Doc(docID(from, to)).Get(ctx)
+	snap, err := s.fsClient.Collection(s.collectionID).Doc(docID(from, to)).Get(ctx)
 	if err != nil {
 		if status.Code(err) == codes.NotFound {
 			return "", false, nil
 		}
-		return "", false, fmt.Errorf("failed to get document from Firestore: %w", err)
+		return "", false, fmt.Errorf("failed to get index from Firestore: %w", err)
 	}
 
-	var doc changelogDoc
+	var doc indexDoc
 	if err := snap.DataTo(&doc); err != nil {
 		return "", false, fmt.Errorf("failed to decode Firestore document: %w", err)
 	}
 
-	changelog, err := decompress(doc.Changelog)
+	changelog, err := s.readFromGCS(ctx, doc.ObjectPath)
 	if err != nil {
-		return "", false, fmt.Errorf("failed to decompress changelog: %w", err)
+		return "", false, fmt.Errorf("failed to read changelog from GCS: %w", err)
 	}
 
 	return changelog, true, nil
 }
 
-// Set stores a changelog in Firestore
+// Set stores a changelog in GCS and writes the index entry to Firestore
 func (s *FirestoreStorage) Set(ctx context.Context, from, to, changelog string) error {
-	compressed, err := compress(changelog)
-	if err != nil {
-		return fmt.Errorf("failed to compress changelog: %w", err)
+	path := objectPath(from, to)
+
+	if err := s.writeToGCS(ctx, path, changelog); err != nil {
+		return fmt.Errorf("failed to write changelog to GCS: %w", err)
 	}
 
-	doc := changelogDoc{
+	doc := indexDoc{
 		FromVersion: from,
 		ToVersion:   to,
-		Changelog:   compressed,
+		ObjectPath:  path,
 		CreatedAt:   time.Now(),
 	}
 
-	if _, err := s.client.Collection(s.collectionID).Doc(docID(from, to)).Set(ctx, doc); err != nil {
-		return fmt.Errorf("failed to set document in Firestore: %w", err)
+	if _, err := s.fsClient.Collection(s.collectionID).Doc(docID(from, to)).Set(ctx, doc); err != nil {
+		klog.Warningf("Firestore index write failed after GCS write succeeded (orphaned object: %s): %v", path, err)
+		return fmt.Errorf("failed to write index to Firestore: %w", err)
 	}
 
 	return nil
 }
 
-// Close closes the Firestore client
+// Close closes both the Firestore and GCS clients
 func (s *FirestoreStorage) Close() error {
-	if s.client != nil {
-		return s.client.Close()
+	var firstErr error
+	if s.fsClient != nil {
+		if err := s.fsClient.Close(); err != nil {
+			firstErr = err
+		}
 	}
-	return nil
+	if s.gcsClient != nil {
+		if err := s.gcsClient.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
-// List returns all changelog entries stored in Firestore
-// Implements the ChangelogLister interface for cache warming
+// List returns all changelog entries by reading the index from Firestore
+// and fetching each changelog from GCS
 func (s *FirestoreStorage) List(ctx context.Context) ([]storage.ChangelogEntry, error) {
-	it := s.client.Collection(s.collectionID).Documents(ctx)
+	it := s.fsClient.Collection(s.collectionID).Documents(ctx)
 	defer it.Stop()
 
 	var entries []storage.ChangelogEntry
@@ -145,14 +179,14 @@ func (s *FirestoreStorage) List(ctx context.Context) ([]storage.ChangelogEntry, 
 			return nil, fmt.Errorf("failed to iterate Firestore documents: %w", err)
 		}
 
-		var doc changelogDoc
+		var doc indexDoc
 		if err := snap.DataTo(&doc); err != nil {
 			return nil, fmt.Errorf("failed to decode Firestore document: %w", err)
 		}
 
-		changelog, err := decompress(doc.Changelog)
+		changelog, err := s.readFromGCS(ctx, doc.ObjectPath)
 		if err != nil {
-			return nil, fmt.Errorf("failed to decompress changelog: %w", err)
+			return nil, fmt.Errorf("failed to read changelog from GCS: %w", err)
 		}
 
 		entries = append(entries, storage.ChangelogEntry{
@@ -165,30 +199,30 @@ func (s *FirestoreStorage) List(ctx context.Context) ([]storage.ChangelogEntry, 
 	return entries, nil
 }
 
-// compress gzip-compresses a changelog string
-func compress(changelog string) ([]byte, error) {
-	var buf bytes.Buffer
-	w := gzip.NewWriter(&buf)
-	if _, err := w.Write([]byte(changelog)); err != nil {
-		return nil, err
+func (s *FirestoreStorage) writeToGCS(ctx context.Context, path, content string) error {
+	w := s.gcsClient.Bucket(s.bucketName).Object(path).NewWriter(ctx)
+	w.ContentType = "application/json"
+	_, writeErr := w.Write([]byte(content))
+	closeErr := w.Close()
+	if writeErr != nil {
+		return fmt.Errorf("%s: %w", path, writeErr)
 	}
-	if err := w.Close(); err != nil {
-		return nil, err
+	if closeErr != nil {
+		return fmt.Errorf("%s: %w", path, closeErr)
 	}
-	return buf.Bytes(), nil
+	return nil
 }
 
-// decompress gzip-decompresses a changelog
-func decompress(data []byte) (string, error) {
-	r, err := gzip.NewReader(bytes.NewReader(data))
+func (s *FirestoreStorage) readFromGCS(ctx context.Context, path string) (string, error) {
+	r, err := s.gcsClient.Bucket(s.bucketName).Object(path).NewReader(ctx)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("%s: %w", path, err)
 	}
 	defer r.Close()
 
-	decompressed, err := io.ReadAll(r)
+	data, err := io.ReadAll(r)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("%s: %w", path, err)
 	}
-	return string(decompressed), nil
+	return string(data), nil
 }

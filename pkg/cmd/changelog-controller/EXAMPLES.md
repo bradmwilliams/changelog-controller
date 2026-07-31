@@ -81,23 +81,25 @@ export FILESYSTEM_ENABLED=false
 
 ## Production - Firestore
 
-### Firestore Only
+### Firestore + GCS
 ```bash
 export GOOGLE_APPLICATION_CREDENTIALS=/etc/gcp/service-account.json
 export FIRESTORE_ENABLED=true
 export FIRESTORE_PROJECT_ID=production-project
 export FIRESTORE_COLLECTION_ID=changelogs
+export FIRESTORE_GCS_BUCKET=changelog-content
 export FILESYSTEM_ENABLED=false
 
 ./changelog-controller start
 ```
 
-### Firestore + Local Backup
+### Firestore + GCS + Local Backup
 ```bash
 ./changelog-controller start \
   --firestore-enabled=true \
   --firestore-project-id=production-project \
   --firestore-collection-id=changelogs \
+  --firestore-gcs-bucket=changelog-content \
   --filesystem-enabled=true \
   --filesystem-base-dir=/mnt/backup/changelogs
 ```
@@ -371,7 +373,7 @@ bq query --use_legacy_sql=false \
 pkill -f changelog-controller
 ```
 
-### Test Firestore Storage (requires GCP credentials)
+### Test Firestore + GCS Storage (requires GCP credentials)
 ```bash
 # Set up credentials
 gcloud auth application-default login
@@ -382,6 +384,7 @@ gcloud auth application-default login
   --firestore-project-id=openshift-crt \
   --firestore-database-id=changelog-controller \
   --firestore-collection-id=changelogs \
+  --firestore-gcs-bucket=changelog-content \
   --filesystem-enabled=false &
 
 # Wait for startup

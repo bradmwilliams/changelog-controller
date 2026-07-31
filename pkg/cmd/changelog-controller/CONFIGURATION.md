@@ -169,7 +169,7 @@ export BIGQUERY_TABLE_ID=release_changelogs
 
 **Default**: Disabled
 
-Cloud-based document storage ideal for production deployments. Changelog content is gzip-compressed before being written to stay well under Firestore's 1 MiB per-document limit.
+Cloud-based storage using Firestore as an index and GCS as the content store. Firestore documents hold version metadata and a reference to the GCS object that contains the actual changelog content.
 
 ### Command-Line Flags
 
@@ -177,7 +177,8 @@ Cloud-based document storage ideal for production deployments. Changelog content
 ./changelog-controller start \
   --firestore-enabled=true \
   --firestore-project-id=my-gcp-project \
-  --firestore-collection-id=changelogs
+  --firestore-collection-id=changelogs \
+  --firestore-gcs-bucket=my-changelog-bucket
 ```
 
 ### Environment Variables
@@ -186,6 +187,7 @@ Cloud-based document storage ideal for production deployments. Changelog content
 export FIRESTORE_ENABLED=true
 export FIRESTORE_PROJECT_ID=my-gcp-project
 export FIRESTORE_COLLECTION_ID=changelogs
+export FIRESTORE_GCS_BUCKET=my-changelog-bucket
 ./changelog-controller start
 ```
 
@@ -197,6 +199,7 @@ export FIRESTORE_COLLECTION_ID=changelogs
 | `--firestore-project-id` | `FIRESTORE_PROJECT_ID` | *(required)* | GCP project ID |
 | `--firestore-database-id` | `FIRESTORE_DATABASE_ID` | `(default)` | Firestore database ID |
 | `--firestore-collection-id` | `FIRESTORE_COLLECTION_ID` | `changelogs` | Firestore collection ID |
+| `--firestore-gcs-bucket` | `FIRESTORE_GCS_BUCKET` | *(required)* | GCS bucket for changelog content |
 
 ### Prerequisites
 
@@ -207,14 +210,16 @@ export FIRESTORE_COLLECTION_ID=changelogs
    export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
    ```
 
-2. **Firestore Database**: A Firestore database in Native mode must already exist in the project; the collection itself is created automatically on first write. The database can be created through the [GCP Console](https://console.cloud.google.com/firestore/databases).
+2. **Firestore Database**: A Firestore database in Native mode must already exist in the project. The database can be created through the [GCP Console](https://console.cloud.google.com/firestore/databases).
+
+3. **GCS Bucket**: A GCS bucket must exist for storing changelog content. The bucket can be public to allow direct consumer access.
 
 ### Notes
 
-- Requires GCP credentials
-- Documents are keyed by a hash of the `from`/`to` version pair
+- Requires GCP credentials for both Firestore and GCS
+- Firestore acts as an index; changelog content is stored as GCS objects
+- GCS objects are stored under `changelogs/` with hash-based filenames
 - Scalable for production workloads
-- Firestore read/write costs apply based on usage
 
 ---
 

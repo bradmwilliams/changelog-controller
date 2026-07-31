@@ -47,11 +47,12 @@ type Options struct {
 	sqliteEnabled      bool
 	sqliteDatabasePath string
 
-	// Firestore storage
+	// Firestore + GCS storage
 	firestoreEnabled      bool
 	firestoreProjectID    string
 	firestoreDatabaseID   string
 	firestoreCollectionID string
+	firestoreGCSBucket    string
 
 	// Filesystem storage
 	filesystemEnabled bool
@@ -126,6 +127,8 @@ func (o *Options) AddFlags(fs *pflag.FlagSet) {
 		"Firestore database ID (can also use FIRESTORE_DATABASE_ID env var, defaults to the (default) database)")
 	fs.StringVar(&o.firestoreCollectionID, "firestore-collection-id", getEnv("FIRESTORE_COLLECTION_ID", "changelogs"),
 		"Firestore collection ID (can also use FIRESTORE_COLLECTION_ID env var)")
+	fs.StringVar(&o.firestoreGCSBucket, "firestore-gcs-bucket", getEnv("FIRESTORE_GCS_BUCKET", ""),
+		"GCS bucket for changelog content storage (can also use FIRESTORE_GCS_BUCKET env var)")
 
 	// Filesystem storage flags
 	fs.BoolVar(&o.filesystemEnabled, "filesystem-enabled", getEnvBool("FILESYSTEM_ENABLED", true),
@@ -225,6 +228,9 @@ func (o *Options) Validate(ctx context.Context) error {
 		if o.firestoreCollectionID == "" {
 			return fmt.Errorf("firestore-collection-id is required when Firestore storage is enabled")
 		}
+		if o.firestoreGCSBucket == "" {
+			return fmt.Errorf("firestore-gcs-bucket is required when Firestore storage is enabled")
+		}
 	}
 
 	// Validate Filesystem configuration if enabled
@@ -284,12 +290,13 @@ func (o *Options) initializeStorageBackends(ctx context.Context) ([]storage.Chan
 
 	// Initialize Firestore storage if enabled
 	if o.firestoreEnabled {
-		klog.Infof("Initializing Firestore storage (project=%s, database=%s, collection=%s)",
-			o.firestoreProjectID, o.firestoreDatabaseID, o.firestoreCollectionID)
+		klog.Infof("Initializing Firestore storage (project=%s, database=%s, collection=%s, bucket=%s)",
+			o.firestoreProjectID, o.firestoreDatabaseID, o.firestoreCollectionID, o.firestoreGCSBucket)
 		firestoreStorage, err := firestore.NewFirestoreStorage(ctx, firestore.Config{
 			ProjectID:    o.firestoreProjectID,
 			DatabaseID:   o.firestoreDatabaseID,
 			CollectionID: o.firestoreCollectionID,
+			BucketName:   o.firestoreGCSBucket,
 		})
 		if err != nil {
 			klog.Warningf("Failed to initialize Firestore storage: %v", err)

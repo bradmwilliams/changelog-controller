@@ -102,6 +102,84 @@ func TestValidateWorkerCount(t *testing.T) {
 	}
 }
 
+func TestValidateFirestoreConfig(t *testing.T) {
+	tests := []struct {
+		name        string
+		opts        Options
+		expectError bool
+	}{
+		{
+			name: "valid firestore config",
+			opts: Options{
+				httpPort:              8080,
+				workerCount:           10,
+				firestoreEnabled:      true,
+				firestoreProjectID:    "test-project",
+				firestoreCollectionID: "changelogs",
+				firestoreGCSBucket:    "test-bucket",
+			},
+			expectError: false,
+		},
+		{
+			name: "missing project ID",
+			opts: Options{
+				httpPort:              8080,
+				workerCount:           10,
+				firestoreEnabled:      true,
+				firestoreCollectionID: "changelogs",
+				firestoreGCSBucket:    "test-bucket",
+			},
+			expectError: true,
+		},
+		{
+			name: "missing collection ID",
+			opts: Options{
+				httpPort:           8080,
+				workerCount:        10,
+				firestoreEnabled:   true,
+				firestoreProjectID: "test-project",
+				firestoreGCSBucket: "test-bucket",
+			},
+			expectError: true,
+		},
+		{
+			name: "missing GCS bucket",
+			opts: Options{
+				httpPort:              8080,
+				workerCount:           10,
+				firestoreEnabled:      true,
+				firestoreProjectID:    "test-project",
+				firestoreCollectionID: "changelogs",
+			},
+			expectError: true,
+		},
+		{
+			name: "firestore disabled skips validation",
+			opts: Options{
+				httpPort:          8080,
+				workerCount:       10,
+				firestoreEnabled:  false,
+				filesystemEnabled: true,
+				filesystemBaseDir: "/tmp/test",
+			},
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.opts.Validate(context.Background())
+
+			if tt.expectError && err == nil {
+				t.Errorf("Expected error for %s, got nil", tt.name)
+			}
+			if !tt.expectError && err != nil {
+				t.Errorf("Expected no error for %s, got: %v", tt.name, err)
+			}
+		})
+	}
+}
+
 func TestGetEnvInt(t *testing.T) {
 	tests := []struct {
 		name         string
