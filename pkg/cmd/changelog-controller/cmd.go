@@ -382,6 +382,7 @@ func (o *Options) createHTTPHandler() http.Handler {
 	// Handler for root endpoint - implement your custom logic here
 	mux.HandleFunc("/", o.handleRoot)
 	mux.HandleFunc("/changelog", o.handleChangelog)
+	mux.HandleFunc("/kernel", o.handleKernel)
 	mux.HandleFunc("/status", o.handleStatus)
 	return mux
 }
@@ -440,12 +441,27 @@ func (o *Options) handleRoot(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "      - arch: Architecture (amd64, arm64, s390x, ppc64le, or multi)\n")
 	fmt.Fprintf(w, "    Optional Parameters:\n")
 	fmt.Fprintf(w, "      - format: Response format ('json' or 'md', default: 'json')\n")
+	fmt.Fprintf(w, "      - product: Product variant ('ocp' or 'origin', default: 'ocp')\n")
 	fmt.Fprintf(w, "    Notes:\n")
 	fmt.Fprintf(w, "      JSON responses include an 'rpmDiff' field when RPM package\n")
 	fmt.Fprintf(w, "      data has been pre-extracted for both releases\n")
 	fmt.Fprintf(w, "    Examples:\n")
 	fmt.Fprintf(w, "      /changelog?from=4.15.0&to=4.16.0&arch=amd64\n")
-	fmt.Fprintf(w, "      /changelog?from=4.15.0&to=4.16.0&arch=arm64&format=md\n\n")
+	fmt.Fprintf(w, "      /changelog?from=4.15.0&to=4.16.0&arch=arm64&format=md\n")
+	fmt.Fprintf(w, "      /changelog?from=4.15.0&to=4.16.0&arch=amd64&product=origin\n\n")
+	fmt.Fprintf(w, "  GET /kernel\n")
+	fmt.Fprintf(w, "    Description: Look up kernel version for a specific release\n")
+	fmt.Fprintf(w, "    Required Parameters:\n")
+	fmt.Fprintf(w, "      - release: Release version (semantic version)\n")
+	fmt.Fprintf(w, "      - arch: Architecture (amd64, arm64, s390x, ppc64le, or multi)\n")
+	fmt.Fprintf(w, "    Optional Parameters:\n")
+	fmt.Fprintf(w, "      - product: Product variant ('ocp' or 'origin', default: 'ocp')\n")
+	fmt.Fprintf(w, "    Response Fields:\n")
+	fmt.Fprintf(w, "      - kernel: Kernel package version\n")
+	fmt.Fprintf(w, "      - kernelRT: Real-time kernel package version (if present)\n")
+	fmt.Fprintf(w, "    Examples:\n")
+	fmt.Fprintf(w, "      /kernel?release=4.22.6&arch=amd64\n")
+	fmt.Fprintf(w, "      /kernel?release=4.22.6&arch=amd64&product=origin\n\n")
 	fmt.Fprintf(w, "  GET /status\n")
 	fmt.Fprintf(w, "    Description: Cache and storage backend status information\n")
 }
@@ -458,6 +474,22 @@ func (o *Options) handleChangelog(w http.ResponseWriter, r *http.Request) {
 	to := query.Get("to")
 	arch := query.Get("arch")
 	format := query.Get("format")
+	productParam := query.Get("product")
+	if productParam == "" {
+		productParam = "ocp"
+	}
+
+	var product rc.Product
+	switch productParam {
+	case "ocp":
+		product = rc.ProductOCP
+	case "origin":
+		product = rc.ProductOrigin
+	default:
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprintf(w, `{"error": "invalid product '%s': must be 'ocp' or 'origin'"}`+"\n", productParam)
+		return
+	}
 
 	if format == "" {
 		format = "json"
@@ -517,8 +549,8 @@ func (o *Options) handleChangelog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fetch PullSpecs BEFORE checking cache - these will be used as cache keys
-	klog.V(4).Infof("Fetching PullSpecs for from=%s, to=%s, arch=%s", from, to, arch)
-	fromPullSpec, toPullSpec := o.fetchPullSpecs(r.Context(), from, to, rc.Architecture(arch))
+	klog.V(4).Infof("Fetching PullSpecs for from=%s, to=%s, arch=%s, product=%s", from, to, arch, productParam)
+	fromPullSpec, toPullSpec := o.fetchPullSpecs(r.Context(), from, to, product, rc.Architecture(arch))
 
 	// If we couldn't get PullSpecs, return an error
 	if fromPullSpec == "" || toPullSpec == "" {
@@ -659,17 +691,15 @@ func (o *Options) lookupRpmDiff(ctx context.Context, fromPullSpec, toPullSpec st
 
 // fetchPullSpecs fetches PullSpecs for the given release versions
 // Returns empty strings if the PullSpecs cannot be found
-func (o *Options) fetchPullSpecs(ctx context.Context, from, to string, arch rc.Architecture) (fromPullSpec, toPullSpec string) {
+func (o *Options) fetchPullSpecs(ctx context.Context, from, to string, product rc.Product, arch rc.Architecture) (fromPullSpec, toPullSpec string) {
 	if o.rcClient == nil {
 		klog.V(4).Info("Release controller client not initialized, skipping PullSpec fetch")
 		return "", ""
 	}
 
-	// Get the client for the specific architecture
-	// Default to OCP product
-	client, err := o.rcClient.GetClient(rc.ProductOCP, arch)
+	client, err := o.rcClient.GetClient(product, arch)
 	if err != nil {
-		klog.V(4).Infof("Failed to get client for arch %s: %v", arch, err)
+		klog.V(4).Infof("Failed to get client for %s/%s: %v", product, arch, err)
 		return "", ""
 	}
 
@@ -704,6 +734,129 @@ func formatBytes(bytes int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.2f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+}
+
+func (o *Options) handleKernel(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	query := r.URL.Query()
+	release := query.Get("release")
+	arch := query.Get("arch")
+	productParam := query.Get("product")
+	if productParam == "" {
+		productParam = "ocp"
+	}
+
+	var product rc.Product
+	switch productParam {
+	case "ocp":
+		product = rc.ProductOCP
+	case "origin":
+		product = rc.ProductOrigin
+	default:
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprintf(w, `{"error": "invalid product '%s': must be 'ocp' or 'origin'"}`+"\n", productParam)
+		return
+	}
+
+	if release == "" || arch == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		if release == "" && arch == "" {
+			fmt.Fprintf(w, `{"error": "missing required query parameters 'release' and 'arch'"}`+"\n")
+		} else if release == "" {
+			fmt.Fprintf(w, `{"error": "missing required query parameter 'release'"}`+"\n")
+		} else {
+			fmt.Fprintf(w, `{"error": "missing required query parameter 'arch'"}`+"\n")
+		}
+		return
+	}
+
+	validArch := false
+	for _, a := range rc.AllArchitectures() {
+		if arch == string(a) {
+			validArch = true
+			break
+		}
+	}
+	if !validArch {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprintf(w, `{"error": "invalid architecture '%s': must be one of 'amd64', 'arm64', 's390x', 'ppc64le', or 'multi'"}`+"\n", arch)
+		return
+	}
+
+	if _, err := semver.Parse(release); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprintf(w, `{"error": "'release' parameter is not a valid semantic version: %s"}`+"\n", release)
+		return
+	}
+
+	if o.rcClient == nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, `{"error": "release controller client not initialized"}`+"\n")
+		return
+	}
+
+	client, err := o.rcClient.GetClient(product, rc.Architecture(arch))
+	if err != nil {
+		klog.V(4).Infof("Failed to get client for %s/%s: %v", productParam, arch, err)
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprintf(w, `{"error": "unsupported product/architecture combination '%s/%s'"}`+"\n", productParam, arch)
+		return
+	}
+
+	pullSpec, err := client.GetPullSpec(r.Context(), release)
+	if err != nil || pullSpec == "" {
+		klog.V(4).Infof("Failed to get PullSpec for release %s (product=%s, arch=%s): %v", release, productParam, arch, err)
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprintf(w, `{"error": "could not find release '%s' for product '%s' and architecture '%s'"}`+"\n", release, productParam, arch)
+		return
+	}
+
+	if o.extractor == nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, `{"error": "release extractor not initialized"}`+"\n")
+		return
+	}
+
+	snap, ok := o.extractor.Get(r.Context(), pullSpec)
+	if !ok || snap.RPMList == nil {
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprintf(w, `{"error": "RPM data not available for release '%s'. Data may not have been extracted yet."}`+"\n", release)
+		return
+	}
+
+	kernel := snap.RPMList.Packages["kernel"]
+	kernelRT := snap.RPMList.Packages["kernel-rt"]
+	if kernelRT == "" && snap.RPMList.Extensions != nil {
+		kernelRT = snap.RPMList.Extensions["kernel-rt"]
+	}
+
+	if kernel == "" && kernelRT == "" {
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprintf(w, `{"error": "no kernel package found in RPM data for release '%s'"}`+"\n", release)
+		return
+	}
+
+	response := struct {
+		Release  string `json:"release"`
+		Arch     string `json:"arch"`
+		Product  string `json:"product"`
+		Kernel   string `json:"kernel,omitempty"`
+		KernelRT string `json:"kernelRT,omitempty"`
+	}{
+		Release:  release,
+		Arch:     arch,
+		Product:  productParam,
+		Kernel:   kernel,
+		KernelRT: kernelRT,
+	}
+
+	w.WriteHeader(http.StatusOK)
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(response); err != nil {
+		klog.Errorf("Failed to encode kernel response: %v", err)
+	}
 }
 
 func (o *Options) handleStatus(w http.ResponseWriter, r *http.Request) {

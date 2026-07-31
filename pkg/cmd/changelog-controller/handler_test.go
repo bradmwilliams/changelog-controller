@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	rc "github.com/bradmwilliams/changelog-controller/pkg/release-controller"
+	"github.com/bradmwilliams/changelog-controller/pkg/storage"
 )
 
 func TestHandleChangelog_Validation(t *testing.T) {
@@ -59,15 +60,61 @@ func TestHandleChangelog_Validation(t *testing.T) {
 	}
 	defer client.Close()
 
-	// Create a MultiClient for testing with just this one client
+	originServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+
+		switch r.URL.Path {
+		case "/api/v1/releasestreams/all":
+			w.Write([]byte(`{
+				"4-stable": ["2.0.0", "1.0.0"]
+			}`))
+		case "/api/v1/releasestream/4-stable/tags":
+			w.Write([]byte(`{
+				"name": "4-stable",
+				"tags": [
+					{
+						"name": "1.0.0",
+						"phase": "Accepted",
+						"pullSpec": "quay.io/origin/release:1.0.0-x86_64",
+						"downloadURL": "https://example.com/origin/1.0.0"
+					},
+					{
+						"name": "2.0.0",
+						"phase": "Accepted",
+						"pullSpec": "quay.io/origin/release:2.0.0-x86_64",
+						"downloadURL": "https://example.com/origin/2.0.0"
+					}
+				]
+			}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer originServer.Close()
+
+	originEndpoint := &rc.Endpoint{
+		Architecture: rc.ArchitectureAMD64,
+		Product:      rc.ProductOrigin,
+		URL:          originServer.URL,
+	}
+
+	originClient, err := rc.NewClient(originEndpoint, rc.DefaultClientConfig())
+	if err != nil {
+		t.Fatalf("failed to create origin client: %v", err)
+	}
+	defer originClient.Close()
+
 	multiClient := &rc.MultiClient{}
 	multiClient.AddClientForTesting(rc.ProductOCP, rc.ArchitectureAMD64, client)
+	multiClient.AddClientForTesting(rc.ProductOrigin, rc.ArchitectureAMD64, originClient)
 
 	ctx := context.Background()
 	cache := NewChangelogCache()
 
-	// Add a test changelog to the cache using PullSpecs as keys
+	// Add test changelogs to the cache using PullSpecs as keys
 	cache.Set(ctx, "quay.io/test/release:1.0.0-x86_64", "quay.io/test/release:2.0.0-x86_64", "# Changelog\n\nTest changes")
+	cache.Set(ctx, "quay.io/origin/release:1.0.0-x86_64", "quay.io/origin/release:2.0.0-x86_64", "# Changelog\n\nOrigin changes")
 
 	opts := &Options{
 		cache:    cache,
@@ -147,6 +194,27 @@ func TestHandleChangelog_Validation(t *testing.T) {
 		{
 			name:                 "invalid to semver",
 			queryParams:          "from=1.0.0&to=invalid&arch=amd64",
+			expectedStatus:       http.StatusBadRequest,
+			expectedContentType:  "application/json",
+			expectedBodyContains: `"error":`,
+		},
+		{
+			name:                 "product=ocp explicit",
+			queryParams:          "from=1.0.0&to=2.0.0&arch=amd64&product=ocp",
+			expectedStatus:       http.StatusOK,
+			expectedContentType:  "application/json",
+			expectedBodyContains: `"fromPullSpec":"quay.io/test/release:1.0.0-x86_64"`,
+		},
+		{
+			name:                 "product=origin",
+			queryParams:          "from=1.0.0&to=2.0.0&arch=amd64&product=origin",
+			expectedStatus:       http.StatusOK,
+			expectedContentType:  "application/json",
+			expectedBodyContains: `"fromPullSpec":"quay.io/origin/release:1.0.0-x86_64"`,
+		},
+		{
+			name:                 "invalid product",
+			queryParams:          "from=1.0.0&to=2.0.0&arch=amd64&product=invalid",
 			expectedStatus:       http.StatusBadRequest,
 			expectedContentType:  "application/json",
 			expectedBodyContains: `"error":`,
@@ -430,6 +498,341 @@ func TestWriteChangelogResponse_CoreOSEnrichment(t *testing.T) {
 	k8s := components[1].(map[string]interface{})
 	if _, ok := k8s["versionUrl"]; ok {
 		t.Error("Kubernetes component should not have versionUrl")
+	}
+}
+
+func TestHandleKernel(t *testing.T) {
+	rcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+
+		switch r.URL.Path {
+		case "/api/v1/releasestreams/all":
+			w.Write([]byte(`{"4-stable": ["4.22.6"]}`))
+		case "/api/v1/releasestream/4-stable/tags":
+			w.Write([]byte(`{
+				"name": "4-stable",
+				"tags": [{
+					"name": "4.22.6",
+					"phase": "Accepted",
+					"pullSpec": "quay.io/test/release:4.22.6-x86_64",
+					"downloadURL": "https://example.com/4.22.6"
+				}]
+			}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer rcServer.Close()
+
+	endpoint := &rc.Endpoint{
+		Architecture: rc.ArchitectureAMD64,
+		Product:      rc.ProductOCP,
+		URL:          rcServer.URL,
+	}
+
+	client, err := rc.NewClient(endpoint, rc.DefaultClientConfig())
+	if err != nil {
+		t.Fatalf("failed to create release-controller client: %v", err)
+	}
+	defer client.Close()
+
+	originServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+
+		switch r.URL.Path {
+		case "/api/v1/releasestreams/all":
+			w.Write([]byte(`{"5-scos-next": ["5.0.0"]}`))
+		case "/api/v1/releasestream/5-scos-next/tags":
+			w.Write([]byte(`{
+				"name": "5-scos-next",
+				"tags": [{
+					"name": "5.0.0",
+					"phase": "Accepted",
+					"pullSpec": "quay.io/test/origin:5.0.0-x86_64",
+					"downloadURL": "https://example.com/5.0.0"
+				}]
+			}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer originServer.Close()
+
+	originEndpoint := &rc.Endpoint{
+		Architecture: rc.ArchitectureAMD64,
+		Product:      rc.ProductOrigin,
+		URL:          originServer.URL,
+	}
+
+	originClient, err := rc.NewClient(originEndpoint, rc.DefaultClientConfig())
+	if err != nil {
+		t.Fatalf("failed to create origin client: %v", err)
+	}
+	defer originClient.Close()
+
+	multiClient := &rc.MultiClient{}
+	multiClient.AddClientForTesting(rc.ProductOCP, rc.ArchitectureAMD64, client)
+	multiClient.AddClientForTesting(rc.ProductOrigin, rc.ArchitectureAMD64, originClient)
+
+	extractor := NewReleaseExtractor(nil)
+	extractor.cache["quay.io/test/release:4.22.6-x86_64"] = &storage.ReleaseSnapshot{
+		PullSpec: "quay.io/test/release:4.22.6-x86_64",
+		RPMList: &storage.RpmList{
+			Packages: map[string]string{
+				"kernel":    "5.14.0-427.22.1.el9_4",
+				"kernel-rt": "5.14.0-427.22.1.rt14.479.el9_4",
+				"bash":      "5.2.26-4.el9",
+			},
+		},
+	}
+	extractor.cache["quay.io/test/origin:5.0.0-x86_64"] = &storage.ReleaseSnapshot{
+		PullSpec: "quay.io/test/origin:5.0.0-x86_64",
+		RPMList: &storage.RpmList{
+			Packages: map[string]string{
+				"kernel": "6.12.0-0.el10",
+				"bash":   "5.2.32-1.el10",
+			},
+		},
+	}
+
+	opts := &Options{
+		rcClient:  multiClient,
+		extractor: extractor,
+	}
+
+	tests := []struct {
+		name           string
+		queryParams    string
+		expectedStatus int
+		expectedBody   string
+	}{
+		{
+			name:           "valid kernel lookup",
+			queryParams:    "release=4.22.6&arch=amd64",
+			expectedStatus: http.StatusOK,
+			expectedBody:   `"kernel":"5.14.0-427.22.1.el9_4"`,
+		},
+		{
+			name:           "includes kernel-rt",
+			queryParams:    "release=4.22.6&arch=amd64",
+			expectedStatus: http.StatusOK,
+			expectedBody:   `"kernelRT":"5.14.0-427.22.1.rt14.479.el9_4"`,
+		},
+		{
+			name:           "default product is ocp",
+			queryParams:    "release=4.22.6&arch=amd64",
+			expectedStatus: http.StatusOK,
+			expectedBody:   `"product":"ocp"`,
+		},
+		{
+			name:           "explicit product ocp",
+			queryParams:    "release=4.22.6&arch=amd64&product=ocp",
+			expectedStatus: http.StatusOK,
+			expectedBody:   `"product":"ocp"`,
+		},
+		{
+			name:           "product origin",
+			queryParams:    "release=5.0.0&arch=amd64&product=origin",
+			expectedStatus: http.StatusOK,
+			expectedBody:   `"kernel":"6.12.0-0.el10"`,
+		},
+		{
+			name:           "product origin includes product field",
+			queryParams:    "release=5.0.0&arch=amd64&product=origin",
+			expectedStatus: http.StatusOK,
+			expectedBody:   `"product":"origin"`,
+		},
+		{
+			name:           "invalid product",
+			queryParams:    "release=4.22.6&arch=amd64&product=invalid",
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   `"error"`,
+		},
+		{
+			name:           "missing release parameter",
+			queryParams:    "arch=amd64",
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   `"error"`,
+		},
+		{
+			name:           "missing arch parameter",
+			queryParams:    "release=4.22.6",
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   `"error"`,
+		},
+		{
+			name:           "invalid arch",
+			queryParams:    "release=4.22.6&arch=mips",
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   `"error"`,
+		},
+		{
+			name:           "invalid semver",
+			queryParams:    "release=not-a-version&arch=amd64",
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   `"error"`,
+		},
+		{
+			name:           "release not found",
+			queryParams:    "release=9.99.99&arch=amd64",
+			expectedStatus: http.StatusNotFound,
+			expectedBody:   `"error"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/kernel?"+tt.queryParams, nil)
+			w := httptest.NewRecorder()
+
+			opts.handleKernel(w, req)
+
+			if w.Code != tt.expectedStatus {
+				t.Errorf("Expected status %d, got %d", tt.expectedStatus, w.Code)
+			}
+			if !strings.Contains(w.Body.String(), tt.expectedBody) {
+				t.Errorf("Expected body to contain %q, got: %s", tt.expectedBody, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandleKernel_KernelRTInExtensions(t *testing.T) {
+	rcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+
+		switch r.URL.Path {
+		case "/api/v1/releasestreams/all":
+			w.Write([]byte(`{"4-stable": ["4.22.6"]}`))
+		case "/api/v1/releasestream/4-stable/tags":
+			w.Write([]byte(`{
+				"name": "4-stable",
+				"tags": [{
+					"name": "4.22.6",
+					"phase": "Accepted",
+					"pullSpec": "quay.io/test/release:4.22.6-x86_64",
+					"downloadURL": "https://example.com/4.22.6"
+				}]
+			}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer rcServer.Close()
+
+	endpoint := &rc.Endpoint{
+		Architecture: rc.ArchitectureAMD64,
+		Product:      rc.ProductOCP,
+		URL:          rcServer.URL,
+	}
+
+	client, err := rc.NewClient(endpoint, rc.DefaultClientConfig())
+	if err != nil {
+		t.Fatalf("failed to create release-controller client: %v", err)
+	}
+	defer client.Close()
+
+	multiClient := &rc.MultiClient{}
+	multiClient.AddClientForTesting(rc.ProductOCP, rc.ArchitectureAMD64, client)
+
+	extractor := NewReleaseExtractor(nil)
+	extractor.cache["quay.io/test/release:4.22.6-x86_64"] = &storage.ReleaseSnapshot{
+		PullSpec: "quay.io/test/release:4.22.6-x86_64",
+		RPMList: &storage.RpmList{
+			Packages: map[string]string{
+				"kernel": "5.14.0-427.22.1.el9_4",
+			},
+			Extensions: map[string]string{
+				"kernel-rt": "5.14.0-427.22.1.rt14.479.el9_4",
+			},
+		},
+	}
+
+	opts := &Options{
+		rcClient:  multiClient,
+		extractor: extractor,
+	}
+
+	req := httptest.NewRequest("GET", "/kernel?release=4.22.6&arch=amd64", nil)
+	w := httptest.NewRecorder()
+
+	opts.handleKernel(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("Expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, `"kernelRT":"5.14.0-427.22.1.rt14.479.el9_4"`) {
+		t.Errorf("Expected kernel-rt from Extensions in response, got: %s", body)
+	}
+}
+
+func TestHandleKernel_NoKernelPackage(t *testing.T) {
+	rcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+
+		switch r.URL.Path {
+		case "/api/v1/releasestreams/all":
+			w.Write([]byte(`{"4-stable": ["4.22.6"]}`))
+		case "/api/v1/releasestream/4-stable/tags":
+			w.Write([]byte(`{
+				"name": "4-stable",
+				"tags": [{
+					"name": "4.22.6",
+					"phase": "Accepted",
+					"pullSpec": "quay.io/test/release:4.22.6-x86_64",
+					"downloadURL": "https://example.com/4.22.6"
+				}]
+			}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer rcServer.Close()
+
+	endpoint := &rc.Endpoint{
+		Architecture: rc.ArchitectureAMD64,
+		Product:      rc.ProductOCP,
+		URL:          rcServer.URL,
+	}
+
+	client, err := rc.NewClient(endpoint, rc.DefaultClientConfig())
+	if err != nil {
+		t.Fatalf("failed to create release-controller client: %v", err)
+	}
+	defer client.Close()
+
+	multiClient := &rc.MultiClient{}
+	multiClient.AddClientForTesting(rc.ProductOCP, rc.ArchitectureAMD64, client)
+
+	extractor := NewReleaseExtractor(nil)
+	extractor.cache["quay.io/test/release:4.22.6-x86_64"] = &storage.ReleaseSnapshot{
+		PullSpec: "quay.io/test/release:4.22.6-x86_64",
+		RPMList: &storage.RpmList{
+			Packages: map[string]string{
+				"bash":     "5.2.26-4.el9",
+				"coreutils": "9.1-8.el9",
+			},
+		},
+	}
+
+	opts := &Options{
+		rcClient:  multiClient,
+		extractor: extractor,
+	}
+
+	req := httptest.NewRequest("GET", "/kernel?release=4.22.6&arch=amd64", nil)
+	w := httptest.NewRecorder()
+
+	opts.handleKernel(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("Expected 404 for release with no kernel package, got %d", w.Code)
 	}
 }
 
