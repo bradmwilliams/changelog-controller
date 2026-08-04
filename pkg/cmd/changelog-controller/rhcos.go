@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/bradmwilliams/changelog-controller/pkg/changelog"
 )
 
 const (
@@ -45,7 +47,7 @@ func rhcosArchitecture(arch string) (architecture, extension string) {
 
 // enrichCoreOSComponents adds RHCOS release browser URLs to CoreOS
 // component entries in the changelog. Non-CoreOS components are unchanged.
-func enrichCoreOSComponents(cl *ChangeLog, arch string) {
+func enrichCoreOSComponents(cl *changelog.ChangeLog, arch string) {
 	if cl == nil || len(cl.Components) == 0 {
 		return
 	}
@@ -62,7 +64,7 @@ func enrichCoreOSComponents(cl *ChangeLog, arch string) {
 
 // enrichCoreOSComponentJSON builds RHCOS release browser URLs for a single
 // CoreOS component entry
-func enrichCoreOSComponentJSON(component ChangeLogComponentInfo, architecture, architectureExtension string) ChangeLogComponentInfo {
+func enrichCoreOSComponentJSON(component changelog.ComponentInfo, architecture, architectureExtension string) changelog.ComponentInfo {
 	if len(component.Version) == 0 {
 		return component
 	}

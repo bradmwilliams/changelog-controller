@@ -1,38 +1,40 @@
-package changelog_controller
+package format
 
 import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bradmwilliams/changelog-controller/pkg/changelog"
 )
 
-func TestFormatChangeLogMarkdown(t *testing.T) {
-	cl := &ChangeLog{
-		From: ChangeLogReleaseInfo{
+func TestChangeLogMarkdown(t *testing.T) {
+	cl := &changelog.ChangeLog{
+		From: changelog.ReleaseInfo{
 			Name:    "4.18.2",
 			Created: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 			Digest:  "sha256:abc",
 		},
-		To: ChangeLogReleaseInfo{
+		To: changelog.ReleaseInfo{
 			Name:    "4.18.3",
 			Created: time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC),
 			Digest:  "sha256:def",
 		},
-		Components: []ChangeLogComponentInfo{
+		Components: []changelog.ComponentInfo{
 			{Name: "Kubernetes", Version: "v1.31.1", From: "v1.31.0", DiffURL: "https://github.com/kubernetes/kubernetes/compare/v1.31.0...v1.31.1"},
 		},
-		UpdatedImages: []ChangeLogImageInfo{
+		UpdatedImages: []changelog.ImageInfo{
 			{
 				Name: "cluster-etcd-operator",
 				Path: "https://github.com/openshift/cluster-etcd-operator",
-				Commits: []CommitInfo{
+				Commits: []changelog.CommitInfo{
 					{Subject: "Fix backup rotation", PullURL: "https://github.com/openshift/cluster-etcd-operator/pull/123"},
 				},
 			},
 		},
 	}
 
-	md := FormatChangeLogMarkdown(cl)
+	md := ChangeLogMarkdown(cl)
 
 	checks := []string{
 		"# 4.18.2 → 4.18.3",
@@ -50,13 +52,13 @@ func TestFormatChangeLogMarkdown(t *testing.T) {
 	}
 }
 
-func TestFormatChangeLogMarkdown_Empty(t *testing.T) {
-	cl := &ChangeLog{
-		From: ChangeLogReleaseInfo{Name: "4.18.2"},
-		To:   ChangeLogReleaseInfo{Name: "4.18.3"},
+func TestChangeLogMarkdown_Empty(t *testing.T) {
+	cl := &changelog.ChangeLog{
+		From: changelog.ReleaseInfo{Name: "4.18.2"},
+		To:   changelog.ReleaseInfo{Name: "4.18.3"},
 	}
 
-	md := FormatChangeLogMarkdown(cl)
+	md := ChangeLogMarkdown(cl)
 	if !strings.Contains(md, "# 4.18.2 → 4.18.3") {
 		t.Errorf("expected header, got:\n%s", md)
 	}
@@ -65,9 +67,9 @@ func TestFormatChangeLogMarkdown_Empty(t *testing.T) {
 	}
 }
 
-func TestFormatRpmDiffMarkdown(t *testing.T) {
-	diff := &RpmDiff{
-		Changed: map[string]RpmChangedDiff{
+func TestRpmDiffMarkdown(t *testing.T) {
+	diff := &changelog.RpmDiff{
+		Changed: map[string]changelog.RpmChangedDiff{
 			"kernel": {Old: "5.14.0-427", New: "5.14.0-428"},
 		},
 		Added: map[string]string{
@@ -78,7 +80,7 @@ func TestFormatRpmDiffMarkdown(t *testing.T) {
 		},
 	}
 
-	md := FormatRpmDiffMarkdown(diff)
+	md := RpmDiffMarkdown(diff)
 
 	checks := []string{
 		"## RPM Package Changes",
@@ -96,8 +98,8 @@ func TestFormatRpmDiffMarkdown(t *testing.T) {
 	}
 }
 
-func TestFormatRpmDiffMarkdown_Nil(t *testing.T) {
-	if got := FormatRpmDiffMarkdown(nil); got != "" {
+func TestRpmDiffMarkdown_Nil(t *testing.T) {
+	if got := RpmDiffMarkdown(nil); got != "" {
 		t.Errorf("expected empty string for nil diff, got: %q", got)
 	}
 }

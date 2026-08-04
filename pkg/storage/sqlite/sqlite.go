@@ -32,8 +32,6 @@ func NewSQLiteStorage(ctx context.Context, cfg Config) (*SQLiteStorage, error) {
 		return nil, fmt.Errorf("databasePath is required")
 	}
 
-	// NOTE: This will fail until github.com/mattn/go-sqlite3 is added
-	// To use: add to go.mod and uncomment the import above
 	db, err := sql.Open("sqlite3", cfg.DatabasePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open SQLite database: %w", err)

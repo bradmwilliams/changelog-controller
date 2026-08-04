@@ -12,6 +12,7 @@ require (
 	github.com/openshift/library-go v0.0.0-20260413093329-d2db42c961e1
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
+	github.com/yuin/goldmark v1.8.5
 	google.golang.org/api v0.287.1
 	google.golang.org/grpc v1.82.0
 	k8s.io/apimachinery v0.35.3

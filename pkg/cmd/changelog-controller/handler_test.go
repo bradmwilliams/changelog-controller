@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bradmwilliams/changelog-controller/pkg/changelog"
 	rc "github.com/bradmwilliams/changelog-controller/pkg/release-controller"
 	"github.com/bradmwilliams/changelog-controller/pkg/storage"
 )
@@ -148,6 +149,13 @@ func TestHandleChangelog_Validation(t *testing.T) {
 			expectedStatus:       http.StatusOK,
 			expectedContentType:  "text/markdown",
 			expectedBodyContains: "# Changelog",
+		},
+		{
+			name:                 "html format",
+			queryParams:          "from=1.0.0&to=2.0.0&arch=amd64&format=html",
+			expectedStatus:       http.StatusOK,
+			expectedContentType:  "text/html",
+			expectedBodyContains: "Changelog",
 		},
 		{
 			name:                 "invalid format",
@@ -385,6 +393,17 @@ func TestWriteChangelogResponse(t *testing.T) {
 			expectedCT:      "text/markdown",
 			expectedContain: "Raw changelog text",
 		},
+		{
+			name:            "html format",
+			from:            "1.0.0",
+			to:              "2.0.0",
+			changelog:       "Raw changelog text",
+			format:          "html",
+			fromPullSpec:    "",
+			toPullSpec:      "",
+			expectedCT:      "text/html",
+			expectedContain: "Raw changelog text",
+		},
 	}
 
 	for _, tt := range tests {
@@ -464,6 +483,46 @@ func TestWriteChangelogResponse_StructuredJSON(t *testing.T) {
 	}
 	if len(updatedImages) != 1 {
 		t.Errorf("changelog.updatedImages has %d entries, want 1", len(updatedImages))
+	}
+}
+
+func TestWriteChangelogResponse_StructuredHTML(t *testing.T) {
+	opts := &Options{}
+
+	changelogJSON := `{"from":{"name":"4.18.2","created":"2026-01-01T00:00:00Z","digest":"sha256:abc"},"to":{"name":"4.18.3","created":"2026-01-02T00:00:00Z","digest":"sha256:def"},"components":[{"name":"Kubernetes","version":"v1.31.1","from":"v1.31.0","diffUrl":"https://github.com/kubernetes/kubernetes/compare/v1.31.0...v1.31.1"}]}`
+
+	rpmDiff := &changelog.RpmDiff{
+		Changed: map[string]changelog.RpmChangedDiff{
+			"kernel": {Old: "5.14.0-427", New: "5.14.0-428"},
+		},
+	}
+
+	w := httptest.NewRecorder()
+	opts.writeChangelogResponse(w, "4.18.2", "4.18.3", changelogJSON, "html", "amd64", "", "", rpmDiff)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", resp.StatusCode)
+	}
+
+	ct := resp.Header.Get("Content-Type")
+	if !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("Expected Content-Type text/html, got %q", ct)
+	}
+
+	body := w.Body.String()
+	checks := []string{
+		"<h1>4.18.2",
+		"<strong>Kubernetes</strong>",
+		"<h2>RPM Package Changes</h2>",
+		"<strong>kernel</strong>",
+	}
+	for _, want := range checks {
+		if !strings.Contains(body, want) {
+			t.Errorf("HTML missing %q\ngot:\n%s", want, body)
+		}
 	}
 }
 

@@ -3,6 +3,8 @@ package changelog_controller
 import (
 	"strings"
 	"testing"
+
+	"github.com/bradmwilliams/changelog-controller/pkg/changelog"
 )
 
 func TestRhcosArchitecture(t *testing.T) {
@@ -96,8 +98,8 @@ func TestGetRHCoSReleaseStream(t *testing.T) {
 
 func TestEnrichCoreOSComponents(t *testing.T) {
 	t.Run("enriches RHCOS component", func(t *testing.T) {
-		cl := &ChangeLog{
-			Components: []ChangeLogComponentInfo{
+		cl := &changelog.ChangeLog{
+			Components: []changelog.ComponentInfo{
 				{
 					Name:    "Red Hat Enterprise Linux CoreOS",
 					Version: "418.94.202501010000-0",
@@ -146,13 +148,13 @@ func TestEnrichCoreOSComponents(t *testing.T) {
 	})
 
 	t.Run("handles empty components", func(t *testing.T) {
-		cl := &ChangeLog{}
+		cl := &changelog.ChangeLog{}
 		enrichCoreOSComponents(cl, "amd64")
 	})
 
 	t.Run("handles version-only component (no from)", func(t *testing.T) {
-		cl := &ChangeLog{
-			Components: []ChangeLogComponentInfo{
+		cl := &changelog.ChangeLog{
+			Components: []changelog.ComponentInfo{
 				{
 					Name:    "Red Hat Enterprise Linux CoreOS",
 					Version: "9.6.20250121-0",
@@ -175,8 +177,8 @@ func TestEnrichCoreOSComponents(t *testing.T) {
 	})
 
 	t.Run("uses correct architecture in URLs", func(t *testing.T) {
-		cl := &ChangeLog{
-			Components: []ChangeLogComponentInfo{
+		cl := &changelog.ChangeLog{
+			Components: []changelog.ComponentInfo{
 				{
 					Name:    "Red Hat Enterprise Linux CoreOS",
 					Version: "9.6.20250121-0",
@@ -193,8 +195,8 @@ func TestEnrichCoreOSComponents(t *testing.T) {
 	})
 
 	t.Run("enriches CentOS Stream CoreOS", func(t *testing.T) {
-		cl := &ChangeLog{
-			Components: []ChangeLogComponentInfo{
+		cl := &changelog.ChangeLog{
+			Components: []changelog.ComponentInfo{
 				{
 					Name:    "CentOS Stream CoreOS",
 					Version: "418.94.202501010000-0",
@@ -210,8 +212,8 @@ func TestEnrichCoreOSComponents(t *testing.T) {
 	})
 
 	t.Run("enriches RHCOS 10", func(t *testing.T) {
-		cl := &ChangeLog{
-			Components: []ChangeLogComponentInfo{
+		cl := &changelog.ChangeLog{
+			Components: []changelog.ComponentInfo{
 				{
 					Name:    "Red Hat Enterprise Linux CoreOS 10",
 					Version: "10.1.20260101-0",

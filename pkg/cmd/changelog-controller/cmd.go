@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/blang/semver/v4"
+	"github.com/bradmwilliams/changelog-controller/pkg/changelog"
+	"github.com/bradmwilliams/changelog-controller/pkg/format"
 	rc "github.com/bradmwilliams/changelog-controller/pkg/release-controller"
 	"github.com/bradmwilliams/changelog-controller/pkg/storage"
 	"github.com/bradmwilliams/changelog-controller/pkg/storage/bigquery"
@@ -447,7 +449,7 @@ func (o *Options) handleRoot(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "      - to: Target release version (semantic version)\n")
 	fmt.Fprintf(w, "      - arch: Architecture (amd64, arm64, s390x, ppc64le, or multi)\n")
 	fmt.Fprintf(w, "    Optional Parameters:\n")
-	fmt.Fprintf(w, "      - format: Response format ('json' or 'md', default: 'json')\n")
+	fmt.Fprintf(w, "      - format: Response format ('json', 'md', or 'html', default: 'json')\n")
 	fmt.Fprintf(w, "      - product: Product variant ('ocp' or 'origin', default: 'ocp')\n")
 	fmt.Fprintf(w, "    Notes:\n")
 	fmt.Fprintf(w, "      JSON responses include an 'rpmDiff' field when RPM package\n")
@@ -473,6 +475,26 @@ func (o *Options) handleRoot(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "    Description: Cache and storage backend status information\n")
 }
 
+func parseProduct(param string) (rc.Product, bool) {
+	switch param {
+	case "ocp", "":
+		return rc.ProductOCP, true
+	case "origin":
+		return rc.ProductOrigin, true
+	default:
+		return "", false
+	}
+}
+
+func isValidArch(arch string) bool {
+	for _, a := range rc.AllArchitectures() {
+		if arch == string(a) {
+			return true
+		}
+	}
+	return false
+}
+
 func (o *Options) handleChangelog(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
@@ -480,31 +502,21 @@ func (o *Options) handleChangelog(w http.ResponseWriter, r *http.Request) {
 	from := query.Get("from")
 	to := query.Get("to")
 	arch := query.Get("arch")
-	format := query.Get("format")
-	productParam := query.Get("product")
-	if productParam == "" {
-		productParam = "ocp"
-	}
-
-	var product rc.Product
-	switch productParam {
-	case "ocp":
-		product = rc.ProductOCP
-	case "origin":
-		product = rc.ProductOrigin
-	default:
+	responseFormat := query.Get("format")
+	product, ok := parseProduct(query.Get("product"))
+	if !ok {
 		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprintf(w, `{"error": "invalid product '%s': must be 'ocp' or 'origin'"}`+"\n", productParam)
+		fmt.Fprintf(w, `{"error": "invalid product '%s': must be 'ocp' or 'origin'"}`+"\n", query.Get("product"))
 		return
 	}
 
-	if format == "" {
-		format = "json"
+	if responseFormat == "" {
+		responseFormat = "json"
 	}
 
-	if format != "json" && format != "md" {
+	if responseFormat != "json" && responseFormat != "md" && responseFormat != "html" {
 		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprintf(w, `{"error": "invalid format parameter: must be 'json' or 'md'"}`+"\n")
+		fmt.Fprintf(w, `{"error": "invalid format parameter: must be 'json', 'md', or 'html'"}`+"\n")
 		return
 	}
 
@@ -529,15 +541,7 @@ func (o *Options) handleChangelog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate arch parameter
-	validArch := false
-	for _, a := range rc.AllArchitectures() {
-		if arch == string(a) {
-			validArch = true
-			break
-		}
-	}
-	if !validArch {
+	if !isValidArch(arch) {
 		w.WriteHeader(http.StatusBadRequest)
 		fmt.Fprintf(w, `{"error": "invalid architecture '%s': must be one of 'amd64', 'arm64', 's390x', 'ppc64le', or 'multi'"}`+"\n", arch)
 		return
@@ -556,7 +560,7 @@ func (o *Options) handleChangelog(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fetch PullSpecs BEFORE checking cache - these will be used as cache keys
-	klog.V(4).Infof("Fetching PullSpecs for from=%s, to=%s, arch=%s, product=%s", from, to, arch, productParam)
+	klog.V(4).Infof("Fetching PullSpecs for from=%s, to=%s, arch=%s, product=%s", from, to, arch, string(product))
 	fromPullSpec, toPullSpec := o.fetchPullSpecs(r.Context(), from, to, product, rc.Architecture(arch))
 
 	// If we couldn't get PullSpecs, return an error
@@ -581,7 +585,7 @@ func (o *Options) handleChangelog(w http.ResponseWriter, r *http.Request) {
 		if cached, found := o.cache.Get(r.Context(), fromPullSpec, toPullSpec); found {
 			klog.V(4).Infof("Cache hit for %s -> %s", fromPullSpec, toPullSpec)
 			rpmDiff := o.lookupRpmDiff(r.Context(), fromPullSpec, toPullSpec)
-			o.writeChangelogResponse(w, from, to, cached, format, arch, fromPullSpec, toPullSpec, rpmDiff)
+			o.writeChangelogResponse(w, from, to, cached, responseFormat, arch, fromPullSpec, toPullSpec, rpmDiff)
 			return
 		}
 		klog.V(4).Infof("Cache miss for %s -> %s", fromPullSpec, toPullSpec)
@@ -620,44 +624,69 @@ func (o *Options) handleChangelog(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (o *Options) writeChangelogResponse(w http.ResponseWriter, from, to, changelog, format, arch, fromPullSpec, toPullSpec string, rpmDiff *RpmDiff) {
+func (o *Options) writeChangelogResponse(w http.ResponseWriter, from, to, changelogData, responseFormat, arch, fromPullSpec, toPullSpec string, rpmDiff *changelog.RpmDiff) {
 	// Unmarshal into typed struct; fall back to raw JSON if it doesn't match
-	var cl ChangeLog
+	var cl changelog.ChangeLog
 	var changelogField interface{}
 	structured := false
-	if err := json.Unmarshal([]byte(changelog), &cl); err == nil && cl.From.Name != "" && cl.To.Name != "" {
+	if err := json.Unmarshal([]byte(changelogData), &cl); err == nil && cl.From.Name != "" && cl.To.Name != "" {
 		enrichCoreOSComponents(&cl, arch)
 		changelogField = &cl
 		structured = true
-	} else if json.Valid([]byte(changelog)) {
-		changelogField = json.RawMessage(changelog)
+	} else if json.Valid([]byte(changelogData)) {
+		changelogField = json.RawMessage(changelogData)
 	} else {
-		changelogField = changelog
+		changelogField = changelogData
 	}
 
-	if format == "md" {
+	if responseFormat == "md" {
 		w.Header().Set("Content-Type", "text/markdown")
 		w.WriteHeader(http.StatusOK)
 
 		if structured {
-			fmt.Fprint(w, FormatChangeLogMarkdown(&cl))
+			fmt.Fprint(w, format.ChangeLogMarkdown(&cl))
 		} else {
-			fmt.Fprint(w, changelog)
+			fmt.Fprint(w, changelogData)
 		}
 
 		if rpmDiff != nil {
-			fmt.Fprint(w, FormatRpmDiffMarkdown(rpmDiff))
+			fmt.Fprint(w, format.RpmDiffMarkdown(rpmDiff))
+		}
+		return
+	}
+
+	if responseFormat == "html" {
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+
+		if structured {
+			if html, err := format.ChangeLogHTML(&cl); err == nil {
+				fmt.Fprint(w, html)
+			} else {
+				klog.Warningf("Failed to render HTML: %v", err)
+				fmt.Fprint(w, changelogData)
+			}
+		} else {
+			fmt.Fprint(w, changelogData)
+		}
+
+		if rpmDiff != nil {
+			if html, err := format.RpmDiffHTML(rpmDiff); err == nil {
+				fmt.Fprint(w, html)
+			} else {
+				klog.Warningf("Failed to render RPM diff HTML: %v", err)
+			}
 		}
 		return
 	}
 
 	response := struct {
-		From         string      `json:"from"`
-		To           string      `json:"to"`
-		FromPullSpec string      `json:"fromPullSpec,omitempty"`
-		ToPullSpec   string      `json:"toPullSpec,omitempty"`
-		Changelog    interface{} `json:"changelog"`
-		RpmDiff      *RpmDiff    `json:"rpmDiff,omitempty"`
+		From         string             `json:"from"`
+		To           string             `json:"to"`
+		FromPullSpec string             `json:"fromPullSpec,omitempty"`
+		ToPullSpec   string             `json:"toPullSpec,omitempty"`
+		Changelog    interface{}        `json:"changelog"`
+		RpmDiff      *changelog.RpmDiff `json:"rpmDiff,omitempty"`
 	}{
 		From:         from,
 		To:           to,
@@ -678,7 +707,7 @@ func (o *Options) writeChangelogResponse(w http.ResponseWriter, from, to, change
 
 // lookupRpmDiff computes an RPM diff between two releases using cached
 // snapshot data. Returns nil if snapshots are unavailable for either release
-func (o *Options) lookupRpmDiff(ctx context.Context, fromPullSpec, toPullSpec string) *RpmDiff {
+func (o *Options) lookupRpmDiff(ctx context.Context, fromPullSpec, toPullSpec string) *changelog.RpmDiff {
 	if o.extractor == nil {
 		return nil
 	}
@@ -693,7 +722,7 @@ func (o *Options) lookupRpmDiff(ctx context.Context, fromPullSpec, toPullSpec st
 		return nil
 	}
 
-	return ComputeRpmDiff(fromSnap.RPMList.Packages, toSnap.RPMList.Packages)
+	return changelog.ComputeRpmDiff(fromSnap.RPMList.Packages, toSnap.RPMList.Packages)
 }
 
 // fetchPullSpecs fetches PullSpecs for the given release versions
@@ -749,20 +778,10 @@ func (o *Options) handleKernel(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	release := query.Get("release")
 	arch := query.Get("arch")
-	productParam := query.Get("product")
-	if productParam == "" {
-		productParam = "ocp"
-	}
-
-	var product rc.Product
-	switch productParam {
-	case "ocp":
-		product = rc.ProductOCP
-	case "origin":
-		product = rc.ProductOrigin
-	default:
+	product, ok := parseProduct(query.Get("product"))
+	if !ok {
 		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprintf(w, `{"error": "invalid product '%s': must be 'ocp' or 'origin'"}`+"\n", productParam)
+		fmt.Fprintf(w, `{"error": "invalid product '%s': must be 'ocp' or 'origin'"}`+"\n", query.Get("product"))
 		return
 	}
 
@@ -778,14 +797,7 @@ func (o *Options) handleKernel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	validArch := false
-	for _, a := range rc.AllArchitectures() {
-		if arch == string(a) {
-			validArch = true
-			break
-		}
-	}
-	if !validArch {
+	if !isValidArch(arch) {
 		w.WriteHeader(http.StatusBadRequest)
 		fmt.Fprintf(w, `{"error": "invalid architecture '%s': must be one of 'amd64', 'arm64', 's390x', 'ppc64le', or 'multi'"}`+"\n", arch)
 		return
@@ -805,17 +817,17 @@ func (o *Options) handleKernel(w http.ResponseWriter, r *http.Request) {
 
 	client, err := o.rcClient.GetClient(product, rc.Architecture(arch))
 	if err != nil {
-		klog.V(4).Infof("Failed to get client for %s/%s: %v", productParam, arch, err)
+		klog.V(4).Infof("Failed to get client for %s/%s: %v", string(product), arch, err)
 		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprintf(w, `{"error": "unsupported product/architecture combination '%s/%s'"}`+"\n", productParam, arch)
+		fmt.Fprintf(w, `{"error": "unsupported product/architecture combination '%s/%s'"}`+"\n", string(product), arch)
 		return
 	}
 
 	pullSpec, err := client.GetPullSpec(r.Context(), release)
 	if err != nil || pullSpec == "" {
-		klog.V(4).Infof("Failed to get PullSpec for release %s (product=%s, arch=%s): %v", release, productParam, arch, err)
+		klog.V(4).Infof("Failed to get PullSpec for release %s (product=%s, arch=%s): %v", release, string(product), arch, err)
 		w.WriteHeader(http.StatusNotFound)
-		fmt.Fprintf(w, `{"error": "could not find release '%s' for product '%s' and architecture '%s'"}`+"\n", release, productParam, arch)
+		fmt.Fprintf(w, `{"error": "could not find release '%s' for product '%s' and architecture '%s'"}`+"\n", release, string(product), arch)
 		return
 	}
 
@@ -827,9 +839,18 @@ func (o *Options) handleKernel(w http.ResponseWriter, r *http.Request) {
 
 	snap, ok := o.extractor.Get(r.Context(), pullSpec)
 	if !ok || snap.RPMList == nil {
-		w.WriteHeader(http.StatusNotFound)
-		fmt.Fprintf(w, `{"error": "RPM data not available for release '%s'. Data may not have been extracted yet."}`+"\n", release)
-		return
+		if err := o.extractor.Extract(r.Context(), pullSpec); err != nil {
+			klog.Warningf("On-demand extraction failed for %s: %v", pullSpec, err)
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprintf(w, `{"error": "failed to extract RPM data for release '%s'"}`+"\n", release)
+			return
+		}
+		snap, ok = o.extractor.Get(r.Context(), pullSpec)
+		if !ok || snap.RPMList == nil {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprintf(w, `{"error": "RPM data not available for release '%s'"}`+"\n", release)
+			return
+		}
 	}
 
 	kernel := snap.RPMList.Packages["kernel"]
@@ -853,7 +874,7 @@ func (o *Options) handleKernel(w http.ResponseWriter, r *http.Request) {
 	}{
 		Release:  release,
 		Arch:     arch,
-		Product:  productParam,
+		Product:  string(product),
 		Kernel:   kernel,
 		KernelRT: kernelRT,
 	}

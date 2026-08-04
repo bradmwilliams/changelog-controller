@@ -37,7 +37,7 @@ export HTTP_PORT=9090
   --sqlite-enabled=true \
   --sqlite-database-path=/var/lib/changelogs.db \
   --filesystem-enabled=true \
-  --filesystem-base-dir=/var/lib/changelog-storage
+  --filesystem-base-dir=/tmp/changelog-storage
 ```
 
 **Environment Variable Version:**
@@ -45,9 +45,36 @@ export HTTP_PORT=9090
 export SQLITE_ENABLED=true
 export SQLITE_DATABASE_PATH=/var/lib/changelogs.db
 export FILESYSTEM_ENABLED=true
-export FILESYSTEM_BASE_DIR=/var/lib/changelog-storage
+export FILESYSTEM_BASE_DIR=/tmp/changelog-storage
 
 ./changelog-controller start
+```
+
+---
+
+## Production - Firestore + GCS
+
+### Firestore + GCS
+```bash
+export GOOGLE_APPLICATION_CREDENTIALS=/etc/gcp/service-account.json
+export FIRESTORE_ENABLED=true
+export FIRESTORE_PROJECT_ID=production-project
+export FIRESTORE_COLLECTION_ID=changelogs
+export FIRESTORE_GCS_BUCKET=changelog-content
+export FILESYSTEM_ENABLED=false
+
+./changelog-controller start
+```
+
+### Firestore + GCS + Local Backup
+```bash
+./changelog-controller start \
+  --firestore-enabled=true \
+  --firestore-project-id=production-project \
+  --firestore-collection-id=changelogs \
+  --firestore-gcs-bucket=changelog-content \
+  --filesystem-enabled=true \
+  --filesystem-base-dir=/mnt/backup/changelogs
 ```
 
 ---
@@ -73,33 +100,6 @@ export FILESYSTEM_ENABLED=false
   --bigquery-project-id=production-project \
   --bigquery-dataset-id=changelogs \
   --bigquery-table-id=release_changelogs \
-  --filesystem-enabled=true \
-  --filesystem-base-dir=/mnt/backup/changelogs
-```
-
----
-
-## Production - Firestore
-
-### Firestore + GCS
-```bash
-export GOOGLE_APPLICATION_CREDENTIALS=/etc/gcp/service-account.json
-export FIRESTORE_ENABLED=true
-export FIRESTORE_PROJECT_ID=production-project
-export FIRESTORE_COLLECTION_ID=changelogs
-export FIRESTORE_GCS_BUCKET=changelog-content
-export FILESYSTEM_ENABLED=false
-
-./changelog-controller start
-```
-
-### Firestore + GCS + Local Backup
-```bash
-./changelog-controller start \
-  --firestore-enabled=true \
-  --firestore-project-id=production-project \
-  --firestore-collection-id=changelogs \
-  --firestore-gcs-bucket=changelog-content \
   --filesystem-enabled=true \
   --filesystem-base-dir=/mnt/backup/changelogs
 ```
@@ -267,7 +267,7 @@ docker run -d \
   -e FILESYSTEM_BASE_DIR=/data \
   -v /var/lib/changelogs:/data \
   -v ~/.config/gcloud:/root/.config/gcloud:ro \
-  -p 8443:8443 \
+  -p 8080:8080 \
   changelog-controller:latest start
 ```
 
@@ -279,7 +279,7 @@ services:
     image: changelog-controller:latest
     command: start
     ports:
-      - "8443:8443"
+      - "8080:8080"
     environment:
       BIGQUERY_ENABLED: "true"
       BIGQUERY_PROJECT_ID: "my-project"
@@ -314,7 +314,7 @@ volumes:
 sleep 5
 
 # Test the endpoint
-curl "http://localhost:8443/changelog?from=1.0.0&to=2.0.0&arch=amd64"
+curl "http://localhost:8080/changelog?from=1.0.0&to=2.0.0&arch=amd64"
 
 # Check storage
 ls -la /tmp/test-changelogs/
@@ -336,7 +336,7 @@ rm -rf /tmp/test-changelogs
 sleep 5
 
 # Generate changelog
-curl "http://localhost:8443/changelog?from=1.0.0&to=2.0.0&arch=amd64"
+curl "http://localhost:8080/changelog?from=1.0.0&to=2.0.0&arch=amd64"
 
 # Check database
 sqlite3 /tmp/test.db "SELECT * FROM changelogs;"
@@ -344,6 +344,30 @@ sqlite3 /tmp/test.db "SELECT * FROM changelogs;"
 # Cleanup
 pkill -f changelog-controller
 rm -f /tmp/test.db
+```
+
+### Test Firestore + GCS Storage (requires GCP credentials)
+```bash
+# Set up credentials
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+
+# Start controller
+./changelog-controller start \
+  --firestore-enabled=true \
+  --firestore-project-id=my-gcp-project \
+  --firestore-database-id=my-database \
+  --firestore-collection-id=changelogs \
+  --firestore-gcs-bucket=my-changelog-bucket \
+  --filesystem-enabled=false &
+
+# Wait for startup
+sleep 5
+
+# Test endpoint
+curl "http://localhost:8080/changelog?from=4.15.0&to=4.16.0&arch=amd64"
+
+# Cleanup
+pkill -f changelog-controller
 ```
 
 ### Test BigQuery Storage (requires GCP credentials)
@@ -359,39 +383,15 @@ export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
   --bigquery-table-id=test_releases \
   --filesystem-enabled=false &
 
-# Monitor logs
-tail -f /var/log/changelog-controller.log
-
-# Test endpoint
-curl "http://localhost:8443/changelog?from=4.15.0&to=4.16.0&arch=amd64"
-
-# Query BigQuery
-bq query --use_legacy_sql=false \
-  'SELECT * FROM test_changelogs.test_releases LIMIT 10'
-
-# Cleanup
-pkill -f changelog-controller
-```
-
-### Test Firestore + GCS Storage (requires GCP credentials)
-```bash
-# Set up credentials
-gcloud auth application-default login
-
-# Start controller
-./changelog-controller start \
-  --firestore-enabled=true \
-  --firestore-project-id=openshift-crt \
-  --firestore-database-id=changelog-controller \
-  --firestore-collection-id=changelogs \
-  --firestore-gcs-bucket=changelog-content \
-  --filesystem-enabled=false &
-
 # Wait for startup
 sleep 5
 
 # Test endpoint
 curl "http://localhost:8080/changelog?from=4.15.0&to=4.16.0&arch=amd64"
+
+# Query BigQuery
+bq query --use_legacy_sql=false \
+  'SELECT * FROM test_changelogs.test_releases LIMIT 10'
 
 # Cleanup
 pkill -f changelog-controller
@@ -491,67 +491,64 @@ export FILESYSTEM_ENABLED=false
 
 ## API Usage Examples
 
-### Querying Changelogs with PullSpec Information
+### Changelog Endpoint
 
-The `/changelog` endpoint automatically enriches responses with container image pull specifications when available.
-
-#### JSON Response Format
-
-**Request:**
+**JSON (default):**
 ```bash
-curl "http://localhost:8080/changelog?from=4.21.9&to=4.21.10&arch=amd64&format=json"
+curl "http://localhost:8080/changelog?from=4.17.0&to=4.17.1&arch=amd64"
 ```
 
-**Response:**
+Returns a structured JSON response containing the `ChangeLog` object (component diffs, image changes, commit history), RPM diff, and resolved pull specs.
+
+**Markdown:**
+```bash
+curl "http://localhost:8080/changelog?from=4.17.0&to=4.17.1&arch=amd64&format=md"
+```
+
+Returns a markdown-formatted changelog rendered from the structured data.
+
+**HTML:**
+```bash
+curl "http://localhost:8080/changelog?from=4.17.0&to=4.17.1&arch=amd64&format=html"
+```
+
+Returns an HTML-rendered changelog suitable for browser display.
+
+**OKD releases:**
+```bash
+curl "http://localhost:8080/changelog?from=4.17.0&to=4.17.1&arch=amd64&product=origin"
+```
+
+The `product` parameter accepts `ocp` (default) or `origin` to query OKD releases.
+
+### Kernel Endpoint
+
+```bash
+curl "http://localhost:8080/kernel?release=4.17.1&arch=amd64"
+```
+
+Returns the kernel and kernel-RT versions for a given release:
 ```json
 {
-  "from": "4.21.9",
-  "to": "4.21.10",
-  "fromPullSpec": "quay.io/openshift-release-dev/ocp-release:4.21.9-x86_64",
-  "toPullSpec": "quay.io/openshift-release-dev/ocp-release:4.21.10-x86_64",
-  "changelog": "# Release 4.21.10\n\n## Changes\n- Bug fixes..."
+  "release": "4.17.1",
+  "arch": "amd64",
+  "product": "ocp",
+  "kernel": "5.14.0-427.49.1.el9_4",
+  "kernelRT": "5.14.0-427.49.1.rt14.502.el9_4"
 }
 ```
 
-The `fromPullSpec` and `toPullSpec` fields are automatically populated by querying the OpenShift release-controller endpoints. These fields:
-- Are optional and only included when the PullSpecs can be resolved
-- Contain the exact container image reference needed to pull the release
-- Are architecture-specific (e.g., `-x86_64`, `-aarch64`, `-s390x`, etc.)
+### Cache Miss (202 Accepted)
 
-#### Markdown Response Format
-
-**Request:**
-```bash
-curl "http://localhost:8080/changelog?from=4.21.9&to=4.21.10&arch=amd64&format=md"
-```
-
-**Response:**
-```markdown
-<!-- PullSpec Information -->
-<!-- From: quay.io/openshift-release-dev/ocp-release:4.21.9-x86_64 -->
-<!-- To: quay.io/openshift-release-dev/ocp-release:4.21.10-x86_64 -->
-
-# Release 4.21.10
-
-## Changes
-- Bug fixes...
-```
-
-For markdown format, PullSpec information is included as HTML comments at the top of the response.
-
-#### Error Handling
-
-If PullSpecs cannot be resolved (e.g., release not found, release-controller unavailable), the endpoint will still return the changelog without the PullSpec fields:
-
+When a changelog has not been generated yet, the service returns `202 Accepted` and generates it in the background:
 ```json
 {
-  "from": "4.21.9",
-  "to": "4.21.10",
-  "changelog": "# Release 4.21.10..."
+  "status": "accepted",
+  "message": "changelog generation in progress"
 }
 ```
 
-This ensures backward compatibility and graceful degradation when the release-controller is unavailable.
+Retry the request after a short delay to receive the completed changelog.
 
 
 ---
@@ -574,7 +571,8 @@ The changelog controller runs **two separate HTTP servers**:
 - Configurable via `--http-port` flag or `HTTP_PORT` environment variable
 - Endpoints:
   - `/` - API documentation
-  - `/changelog` - Generate changelogs
+  - `/changelog` - Generate changelogs (JSON default, optional `format=md` or `format=html`)
+  - `/kernel` - Kernel version lookup for a release
   - `/status` - Cache and storage status
 
 **Example Configuration:**

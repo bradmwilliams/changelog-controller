@@ -1,30 +1,30 @@
-package changelog_controller
+package changelog
 
 import "time"
 
 // ChangeLog represents the structured output of
 // oc adm release info --changelog --output=json
 type ChangeLog struct {
-	From ChangeLogReleaseInfo `json:"from"`
-	To   ChangeLogReleaseInfo `json:"to"`
+	From ReleaseInfo `json:"from"`
+	To   ReleaseInfo `json:"to"`
 
-	Components    []ChangeLogComponentInfo `json:"components,omitempty"`
-	NewImages     []ChangeLogImageInfo     `json:"newImages,omitempty"`
-	RemovedImages []ChangeLogImageInfo     `json:"removedImages,omitempty"`
-	RebuiltImages []ChangeLogImageInfo     `json:"rebuiltImages,omitempty"`
-	UpdatedImages []ChangeLogImageInfo     `json:"updatedImages,omitempty"`
+	Components    []ComponentInfo `json:"components,omitempty"`
+	NewImages     []ImageInfo     `json:"newImages,omitempty"`
+	RemovedImages []ImageInfo     `json:"removedImages,omitempty"`
+	RebuiltImages []ImageInfo     `json:"rebuiltImages,omitempty"`
+	UpdatedImages []ImageInfo     `json:"updatedImages,omitempty"`
 }
 
-// ChangeLogReleaseInfo identifies a release in a changelog diff
-type ChangeLogReleaseInfo struct {
+// ReleaseInfo identifies a release in a changelog diff
+type ReleaseInfo struct {
 	Name         string    `json:"name"`
 	Created      time.Time `json:"created"`
 	Digest       string    `json:"digest"`
 	PromotedFrom string    `json:"promotedFrom,omitempty"`
 }
 
-// ChangeLogComponentInfo describes a version change for a platform component
-type ChangeLogComponentInfo struct {
+// ComponentInfo describes a version change for a platform component
+type ComponentInfo struct {
 	Name       string `json:"name"`
 	Version    string `json:"version"`
 	VersionURL string `json:"versionUrl,omitempty"`
@@ -33,9 +33,9 @@ type ChangeLogComponentInfo struct {
 	DiffURL    string `json:"diffUrl,omitempty"`
 }
 
-// ChangeLogImageInfo describes a container image that was added, removed,
+// ImageInfo describes a container image that was added, removed,
 // rebuilt, or updated between two releases
-type ChangeLogImageInfo struct {
+type ImageInfo struct {
 	Name          string       `json:"name"`
 	Path          string       `json:"path"`
 	ShortCommit   string       `json:"shortCommit,omitempty"`

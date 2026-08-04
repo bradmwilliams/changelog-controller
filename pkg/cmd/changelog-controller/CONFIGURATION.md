@@ -8,8 +8,8 @@ The controller supports four storage backends that can be enabled individually o
 
 1. **Filesystem Storage** (enabled by default)
 2. **SQLite Storage**
-3. **BigQuery Storage**
-4. **Firestore Storage**
+3. **Firestore + GCS Storage**
+4. **BigQuery Storage**
 
 ### Configuration Methods
 
@@ -32,14 +32,14 @@ Simple file-based storage ideal for development and small deployments.
 ```bash
 ./changelog-controller start \
   --filesystem-enabled=true \
-  --filesystem-base-dir=/var/lib/changelog-storage
+  --filesystem-base-dir=/tmp/changelog-storage
 ```
 
 ### Environment Variables
 
 ```bash
 export FILESYSTEM_ENABLED=true
-export FILESYSTEM_BASE_DIR=/var/lib/changelog-storage
+export FILESYSTEM_BASE_DIR=/tmp/changelog-storage
 ./changelog-controller start
 ```
 
@@ -48,7 +48,7 @@ export FILESYSTEM_BASE_DIR=/var/lib/changelog-storage
 | Flag | Environment Variable | Default | Description |
 |------|---------------------|---------|-------------|
 | `--filesystem-enabled` | `FILESYSTEM_ENABLED` | `true` | Enable filesystem storage |
-| `--filesystem-base-dir` | `FILESYSTEM_BASE_DIR` | `/var/lib/changelog-storage` | Base directory for storage |
+| `--filesystem-base-dir` | `FILESYSTEM_BASE_DIR` | `/tmp/changelog-storage` | Base directory for storage |
 
 ### Notes
 
@@ -94,6 +94,64 @@ export SQLITE_DATABASE_PATH=/var/lib/changelogs.db
 - Supports UPSERT for updates
 - Use `:memory:` for in-memory database (testing only)
 - Requires write permissions to database directory
+
+---
+
+## Firestore + GCS Storage
+
+**Default**: Disabled
+
+Cloud-based storage using Firestore as an index and GCS as the content store. Firestore documents hold version metadata and a reference to the GCS object that contains the actual changelog content.
+
+### Command-Line Flags
+
+```bash
+./changelog-controller start \
+  --firestore-enabled=true \
+  --firestore-project-id=my-gcp-project \
+  --firestore-collection-id=changelogs \
+  --firestore-gcs-bucket=my-changelog-bucket
+```
+
+### Environment Variables
+
+```bash
+export FIRESTORE_ENABLED=true
+export FIRESTORE_PROJECT_ID=my-gcp-project
+export FIRESTORE_COLLECTION_ID=changelogs
+export FIRESTORE_GCS_BUCKET=my-changelog-bucket
+./changelog-controller start
+```
+
+### Configuration Options
+
+| Flag | Environment Variable | Default | Description |
+|------|---------------------|---------|-------------|
+| `--firestore-enabled` | `FIRESTORE_ENABLED` | `false` | Enable Firestore storage |
+| `--firestore-project-id` | `FIRESTORE_PROJECT_ID` | *(required)* | GCP project ID |
+| `--firestore-database-id` | `FIRESTORE_DATABASE_ID` | `(default)` | Firestore database ID |
+| `--firestore-collection-id` | `FIRESTORE_COLLECTION_ID` | `changelogs` | Firestore collection ID |
+| `--firestore-gcs-bucket` | `FIRESTORE_GCS_BUCKET` | *(required)* | GCS bucket for changelog content |
+
+### Prerequisites
+
+1. **GCP Authentication**: Set up application default credentials
+   ```bash
+   gcloud auth application-default login
+   # Or use service account
+   export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+   ```
+
+2. **Firestore Database**: A Firestore database in Native mode must already exist in the project. The database can be created through the [GCP Console](https://console.cloud.google.com/firestore/databases).
+
+3. **GCS Bucket**: A GCS bucket must exist for storing changelog content. The bucket can be public to allow direct consumer access.
+
+### Notes
+
+- Requires GCP credentials for both Firestore and GCS
+- Firestore acts as an index; changelog content is stored as GCS objects
+- GCS objects are stored under `changelogs/` with hash-based filenames
+- Scalable for production workloads
 
 ---
 
@@ -165,61 +223,17 @@ export BIGQUERY_TABLE_ID=release_changelogs
 
 ---
 
-## Firestore Storage
+## Operational Flags
 
-**Default**: Disabled
-
-Cloud-based storage using Firestore as an index and GCS as the content store. Firestore documents hold version metadata and a reference to the GCS object that contains the actual changelog content.
-
-### Command-Line Flags
-
-```bash
-./changelog-controller start \
-  --firestore-enabled=true \
-  --firestore-project-id=my-gcp-project \
-  --firestore-collection-id=changelogs \
-  --firestore-gcs-bucket=my-changelog-bucket
-```
-
-### Environment Variables
-
-```bash
-export FIRESTORE_ENABLED=true
-export FIRESTORE_PROJECT_ID=my-gcp-project
-export FIRESTORE_COLLECTION_ID=changelogs
-export FIRESTORE_GCS_BUCKET=my-changelog-bucket
-./changelog-controller start
-```
-
-### Configuration Options
+These flags control the changelog generation behavior:
 
 | Flag | Environment Variable | Default | Description |
 |------|---------------------|---------|-------------|
-| `--firestore-enabled` | `FIRESTORE_ENABLED` | `false` | Enable Firestore storage |
-| `--firestore-project-id` | `FIRESTORE_PROJECT_ID` | *(required)* | GCP project ID |
-| `--firestore-database-id` | `FIRESTORE_DATABASE_ID` | `(default)` | Firestore database ID |
-| `--firestore-collection-id` | `FIRESTORE_COLLECTION_ID` | `changelogs` | Firestore collection ID |
-| `--firestore-gcs-bucket` | `FIRESTORE_GCS_BUCKET` | *(required)* | GCS bucket for changelog content |
-
-### Prerequisites
-
-1. **GCP Authentication**: Set up application default credentials
-   ```bash
-   gcloud auth application-default login
-   # Or use service account
-   export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
-   ```
-
-2. **Firestore Database**: A Firestore database in Native mode must already exist in the project. The database can be created through the [GCP Console](https://console.cloud.google.com/firestore/databases).
-
-3. **GCS Bucket**: A GCS bucket must exist for storing changelog content. The bucket can be public to allow direct consumer access.
-
-### Notes
-
-- Requires GCP credentials for both Firestore and GCS
-- Firestore acts as an index; changelog content is stored as GCS objects
-- GCS objects are stored under `changelogs/` with hash-based filenames
-- Scalable for production workloads
+| `--workers` | `WORKERS` | `10` | Number of concurrent changelog generation workers |
+| `--watcher-enabled` | `WATCHER_ENABLED` | `true` | Enable the release watcher that polls for newly ready releases |
+| `--watcher-poll-interval` | `WATCHER_POLL_INTERVAL` | `2m` | How often the watcher polls for new releases |
+| `--cache-warming-enabled` | `CACHE_WARMING_ENABLED` | `true` | Load changelogs from storage backends into memory on startup |
+| `--http-port` | `HTTP_PORT` | `8080` | Port for the changelog API server |
 
 ---
 
@@ -236,7 +250,7 @@ Enable multiple storage backends for redundancy and failover.
   --sqlite-enabled=true \
   --sqlite-database-path=/var/lib/changelogs.db \
   --filesystem-enabled=true \
-  --filesystem-base-dir=/var/lib/changelog-storage
+  --filesystem-base-dir=/tmp/changelog-storage
 ```
 
 ### Behavior
@@ -244,12 +258,12 @@ Enable multiple storage backends for redundancy and failover.
 When multiple backends are enabled:
 
 1. **Read Operations** (Cache Miss):
-   - Query backends in order: Memory → BigQuery → SQLite → Filesystem
-   - First successful response is returned and cached
+   - Query backends sequentially in init order: BigQuery → SQLite → Firestore → Filesystem
+   - First successful response is returned and cached in memory
    - Failed backends are logged but don't block
 
 2. **Write Operations** (New Changelog):
-   - Write to **all** enabled backends concurrently
+   - Write to **all** enabled backends sequentially
    - Failed writes are logged but don't prevent success
    - In-memory cache is always updated
 
@@ -306,7 +320,7 @@ data:
   BIGQUERY_TABLE_ID: "release_changelogs"
   SQLITE_ENABLED: "false"
   FILESYSTEM_ENABLED: "true"
-  FILESYSTEM_BASE_DIR: "/var/lib/changelog-storage"
+  FILESYSTEM_BASE_DIR: "/tmp/changelog-storage"
 ```
 
 ### Deployment with Storage
@@ -354,7 +368,7 @@ The controller validates configuration on startup:
 
 - **BigQuery**: Requires `project-id` when enabled
 - **SQLite**: Requires `database-path` when enabled  
-- **Firestore**: Requires `project-id` and `collection-id` when enabled
+- **Firestore**: Requires `project-id`, `collection-id`, and `gcs-bucket` when enabled
 - **Filesystem**: Requires `base-dir` when enabled
 
 Invalid configuration will prevent startup with a descriptive error message.

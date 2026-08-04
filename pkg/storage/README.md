@@ -1,13 +1,13 @@
 # Changelog Storage Backends
 
-This package provides a pluggable storage interface for persisting changelog generation results.
+This package provides a pluggable storage interface for persisting generated changelogs.
 
 ## Architecture
 
 The storage system uses a layered approach:
 
 1. **In-Memory Cache** - Fast first-level cache for immediate responses
-2. **Persistent Storage** - Pluggable backends for durable storage (BigQuery, SQLite, etc.)
+2. **Persistent Storage** - Pluggable backends for durable storage (Filesystem, SQLite, Firestore+GCS, BigQuery)
 
 When a changelog is requested:
 - Check in-memory cache first (fastest)
@@ -38,9 +38,75 @@ type ChangelogStorage interface {
 
 ## Available Backends
 
+### Filesystem
+
+No external dependencies required.
+
+**Configuration**:
+```go
+storage, err := filesystem.NewFilesystemStorage(ctx, filesystem.Config{
+    BaseDir: "/tmp/changelog-storage",
+})
+```
+
+**Features**:
+- Simple file-based storage
+- No external dependencies
+- Hash-based filenames for safety
+- Metadata files for debugging
+- Automatic directory creation
+- Ideal for simple deployments or local development
+
+**Storage Format**:
+- Each changelog is stored as a text file
+- Filename is SHA256 hash of "from->to" version pair
+- Metadata file (`.meta`) stores version information
+- Example: `abc123def456.txt` and `abc123def456.meta`
+
+### SQLite
+
+Requires `github.com/mattn/go-sqlite3`.
+
+**Configuration**:
+```go
+storage, err := sqlite.NewSQLiteStorage(ctx, sqlite.Config{
+    DatabasePath: "/var/lib/changelogs.db",
+    // Or use ":memory:" for in-memory (testing only)
+})
+```
+
+**Features**:
+- Self-contained local database
+- No external dependencies
+- Automatic schema initialization
+- UPSERT support for updates
+- Ideal for development and small deployments
+
+### Firestore + GCS
+
+Requires `cloud.google.com/go/firestore` and `cloud.google.com/go/storage`.
+
+Uses Firestore as an index and Google Cloud Storage (GCS) as the content store. Firestore documents hold version metadata and a reference to the GCS object containing the actual changelog content.
+
+**Configuration**:
+```go
+storage, err := firestore.NewFirestoreStorage(ctx, firestore.Config{
+    ProjectID:    "my-gcp-project",
+    DatabaseID:   "changelog-controller",
+    CollectionID: "changelogs",
+    BucketName:   "my-changelog-bucket",
+})
+```
+
+**Features**:
+- Firestore acts as an index; changelog content is stored as GCS objects
+- GCS objects stored under `changelogs/` with hash-based filenames
+- Scalable for production deployments
+- No document size constraints (content lives in GCS)
+
 ### BigQuery
 
-**Status**: ✅ **Fully Implemented** (requires `cloud.google.com/go/bigquery`)
+Requires `cloud.google.com/go/bigquery`.
 
 **Configuration**:
 ```go
@@ -67,55 +133,19 @@ CREATE TABLE changelogs (
 - Parameterized queries for safety
 - Ideal for production deployments
 
-**Enabled**: Yes (dependency already added)
+### ReleaseSnapshot Storage
 
-### SQLite
+The storage layer also supports per-release metadata via `ReleaseSnapshotStorage`:
 
-**Status**: ✅ **Fully Implemented** (requires `github.com/mattn/go-sqlite3`)
-
-**Configuration**:
 ```go
-storage, err := sqlite.NewSQLiteStorage(ctx, sqlite.Config{
-    DatabasePath: "/var/lib/changelogs.db",
-    // Or use ":memory:" for in-memory (testing only)
-})
+type ReleaseSnapshotStorage interface {
+    GetSnapshot(ctx context.Context, pullSpec string) (*ReleaseSnapshot, bool, error)
+    SetSnapshot(ctx context.Context, snap *ReleaseSnapshot) error
+    ListSnapshots(ctx context.Context) ([]*ReleaseSnapshot, error)
+}
 ```
 
-**Features**:
-- Self-contained local database
-- No external dependencies
-- Automatic schema initialization
-- UPSERT support for updates
-- Ideal for development and small deployments
-
-**Enabled**: Yes (dependency already added)
-
-### Filesystem
-
-**Status**: ✅ **Fully Implemented** (no dependencies required)
-
-**Configuration**:
-```go
-storage, err := filesystem.NewFilesystemStorage(ctx, filesystem.Config{
-    BaseDir: "/var/lib/changelog-storage",
-})
-```
-
-**Features**:
-- Simple file-based storage
-- No external dependencies
-- Hash-based filenames for safety
-- Metadata files for debugging
-- Automatic directory creation
-- Ideal for simple deployments or local development
-
-**Storage Format**:
-- Each changelog is stored as a text file
-- Filename is SHA256 hash of "from->to" version pair
-- Metadata file (`.meta`) stores version information
-- Example: `abc123def456.txt` and `abc123def456.meta`
-
-**Enabled**: Yes (no dependencies needed)
+`ReleaseSnapshot` stores the component manifest and RPM package list extracted from a release image. Currently implemented by the filesystem backend (`pkg/storage/filesystem/release_snapshot.go`), stored under `{base-dir}/snapshots/`.
 
 ## Adding a New Backend
 
@@ -225,6 +255,7 @@ Run specific backend tests:
 ```bash
 go test ./pkg/storage/bigquery -v
 go test ./pkg/storage/sqlite -v
+go test ./pkg/storage/firestore -v
 ```
 
 ## Best Practices
@@ -240,5 +271,5 @@ go test ./pkg/storage/sqlite -v
 
 - In-memory cache provides sub-millisecond responses
 - Storage backends are queried only on cache miss
-- All storage writes happen asynchronously (don't block HTTP responses)
-- Multiple backends are queried in parallel (first successful response wins)
+- Storage writes happen on the worker goroutine after changelog generation
+- Multiple backends are queried sequentially (first successful response wins)

@@ -1,4 +1,4 @@
-package changelog_controller
+package changelog
 
 import (
 	"testing"

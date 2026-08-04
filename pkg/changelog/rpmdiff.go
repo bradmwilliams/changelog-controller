@@ -1,4 +1,4 @@
-package changelog_controller
+package changelog
 
 // RpmDiff represents the difference in RPM packages between two releases
 type RpmDiff struct {

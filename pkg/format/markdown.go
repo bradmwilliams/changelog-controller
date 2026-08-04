@@ -1,12 +1,14 @@
-package changelog_controller
+package format
 
 import (
 	"fmt"
 	"strings"
+
+	"github.com/bradmwilliams/changelog-controller/pkg/changelog"
 )
 
-// FormatChangeLogMarkdown renders a structured ChangeLog as markdown.
-func FormatChangeLogMarkdown(cl *ChangeLog) string {
+// ChangeLogMarkdown renders a structured ChangeLog as markdown.
+func ChangeLogMarkdown(cl *changelog.ChangeLog) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "# %s → %s\n\n", cl.From.Name, cl.To.Name)
@@ -35,7 +37,7 @@ func FormatChangeLogMarkdown(cl *ChangeLog) string {
 	return b.String()
 }
 
-func writeImageSection(b *strings.Builder, title string, images []ChangeLogImageInfo) {
+func writeImageSection(b *strings.Builder, title string, images []changelog.ImageInfo) {
 	if len(images) == 0 {
 		return
 	}
@@ -65,8 +67,8 @@ func writeImageSection(b *strings.Builder, title string, images []ChangeLogImage
 	}
 }
 
-// FormatRpmDiffMarkdown renders an RpmDiff as a markdown section.
-func FormatRpmDiffMarkdown(diff *RpmDiff) string {
+// RpmDiffMarkdown renders an RpmDiff as a markdown section.
+func RpmDiffMarkdown(diff *changelog.RpmDiff) string {
 	if diff == nil {
 		return ""
 	}
