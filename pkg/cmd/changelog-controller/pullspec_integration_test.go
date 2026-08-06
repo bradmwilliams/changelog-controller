@@ -101,7 +101,7 @@ func TestPullSpecIntegration(t *testing.T) {
 		toPS := "quay.io/openshift-release-dev/ocp-release:4.21.10-x86_64"
 		changelog := "# Release 4.21.10\n\nBug fixes"
 
-		opts.writeChangelogResponse(w, "4.21.9", "4.21.10", changelog, "json", "amd64", fromPS, toPS, nil)
+		opts.writeChangelogResponse(w, "4.21.9", "4.21.10", changelog, "json", "amd64", fromPS, toPS, nil, "")
 
 		resp := w.Result()
 		defer resp.Body.Close()
@@ -137,7 +137,7 @@ func TestPullSpecIntegration(t *testing.T) {
 		w := httptest.NewRecorder()
 		changelog := "# Release 4.21.10\n\nBug fixes"
 
-		opts.writeChangelogResponse(w, "4.21.9", "4.21.10", changelog, "json", "amd64", "", "", nil)
+		opts.writeChangelogResponse(w, "4.21.9", "4.21.10", changelog, "json", "amd64", "", "", nil, "")
 
 		resp := w.Result()
 		defer resp.Body.Close()

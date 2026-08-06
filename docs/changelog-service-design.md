@@ -132,6 +132,7 @@ The service is built on top of the `changelog-controller` codebase using the `li
 | Configurable worker count | `--workers` flag (default 10) |
 | Dockerfile | `images/changelog-controller/Dockerfile` |
 | Unit tests | Handler, config, RHCOS, watcher, RPM diff, markdown, extractor, storage backend tests |
+| Kubernetes deployment manifests | Deployment, Service, Ingress, ServiceAccount, Secrets committed in `manifests/`; exposed at `changelog.apps.engineering.openshift.org` with TLS via cert-manager |
 
 ### Not yet implemented
 
@@ -141,15 +142,11 @@ An OpenAPI/Swagger specification for the `ChangeLog`, `RpmDiff`, and `/kernel` r
 
 **2. Custom Prometheus metrics**
 
-`/healthz`, `/readyz`, and `/metrics` are provided by the controller framework on a separate port. Custom metrics (request latency, cache hit rate, queue depth, `oc` subprocess duration) are not yet exposed on the changelog HTTP server's `/status` endpoint (which currently returns plain text stats).
+`/healthz`, `/readyz`, `/livez`, and `/metrics` are provided by the controller framework on the secure port (8443). Kubernetes probes target port 8443 with `scheme: HTTPS`. Custom metrics (request latency, cache hit rate, queue depth, `oc` subprocess duration) are not yet exposed; the `/status` endpoint on port 8080 provides plain text diagnostics but is not used for probes.
 
 **3. RPM package changelogs**
 
 Extracting per-package RPM changelogs requires running containers inside containers (`podman run` against the RHCOS image), which presents security implications. See `docs/feature-backlog.md`.
-
-**4. Kubernetes deployment manifests**
-
-No committed Deployment, Route, ConfigMap, or pull secret manifests. CONFIGURATION.md has example templates but they are not maintained as deployable resources.
 
 ---
 

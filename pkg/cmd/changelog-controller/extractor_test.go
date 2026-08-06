@@ -13,7 +13,7 @@ import (
 )
 
 func TestReleaseExtractor_GetSetCache(t *testing.T) {
-	extractor := NewReleaseExtractor(nil)
+	extractor := NewReleaseExtractor(nil, 0)
 	ctx := context.Background()
 
 	pullSpec := "registry.ci.openshift.org/ocp/release@sha256:test"
@@ -73,7 +73,7 @@ func TestReleaseExtractor_GetFromStorage(t *testing.T) {
 	}
 
 	// Create extractor backed by this storage
-	extractor := NewReleaseExtractor(ss)
+	extractor := NewReleaseExtractor(ss, 0)
 
 	// Get should find it in storage and populate the in-memory cache
 	snap, found := extractor.Get(ctx, pullSpec)
@@ -119,7 +119,7 @@ func TestReleaseExtractor_WarmCache(t *testing.T) {
 		}
 	}
 
-	extractor := NewReleaseExtractor(ss)
+	extractor := NewReleaseExtractor(ss, 0)
 
 	if err := extractor.WarmCache(ctx); err != nil {
 		t.Fatalf("WarmCache() error = %v", err)
@@ -145,8 +145,202 @@ func TestReleaseExtractor_WarmCache(t *testing.T) {
 }
 
 func TestReleaseExtractor_WarmCacheNilStorage(t *testing.T) {
-	extractor := NewReleaseExtractor(nil)
+	extractor := NewReleaseExtractor(nil, 0)
 	if err := extractor.WarmCache(context.Background()); err != nil {
 		t.Errorf("WarmCache() with nil storage should not error, got %v", err)
+	}
+}
+
+func TestReleaseExtractor_ExtractSkipsWhenCachedWithRPMList(t *testing.T) {
+	pullSpec := "registry.ci.openshift.org/ocp/release@sha256:already-cached"
+
+	extractor := NewReleaseExtractor(nil, 0)
+	extractor.cache[pullSpec] = &storage.ReleaseSnapshot{
+		PullSpec: pullSpec,
+		Manifest: json.RawMessage(`{"cached": true}`),
+		RPMList: &storage.RpmList{
+			Packages: map[string]string{"kernel": "5.14.0-427.el9"},
+		},
+		ExtractedAt: time.Now(),
+	}
+
+	// Extract should return nil (no-op) because snapshot already has RPMList.
+	// If oc were actually invoked it would fail since the pullSpec is fake.
+	err := extractor.Extract(context.Background(), pullSpec)
+	if err != nil {
+		t.Fatalf("Extract() error = %v, want nil for cached snapshot with RPMList", err)
+	}
+
+	// Verify cache is unchanged
+	snap, found := extractor.Get(context.Background(), pullSpec)
+	if !found {
+		t.Fatal("Get() found = false after Extract no-op")
+	}
+	if snap.RPMList.Packages["kernel"] != "5.14.0-427.el9" {
+		t.Errorf("kernel version changed unexpectedly: %q", snap.RPMList.Packages["kernel"])
+	}
+}
+
+func TestReleaseExtractor_ExtractDoesNotSkipWhenRPMListNil(t *testing.T) {
+	pullSpec := "registry.ci.openshift.org/ocp/release@sha256:needs-rpm"
+
+	extractor := NewReleaseExtractor(nil, 0)
+	extractor.cache[pullSpec] = &storage.ReleaseSnapshot{
+		PullSpec:    pullSpec,
+		Manifest:    json.RawMessage(`{"partial": true}`),
+		RPMList:     nil, // manifest was extracted, RPMs were not
+		ExtractedAt: time.Now(),
+	}
+
+	// Extract should NOT skip — it should attempt to run oc.
+	// Since oc won't succeed with a fake pullSpec, we expect an error,
+	// which proves the short-circuit was correctly bypassed.
+	err := extractor.Extract(context.Background(), pullSpec)
+	if err == nil {
+		t.Fatal("Extract() returned nil, expected error because oc cannot process a fake pullSpec")
+	}
+}
+
+func TestReleaseExtractor_StoragePersistence(t *testing.T) {
+	ctx := context.Background()
+	tempDir := filepath.Join(os.TempDir(), "test-extractor-persist")
+	defer os.RemoveAll(tempDir)
+
+	ss, err := filesystem.NewSnapshotStorage(ctx, tempDir)
+	if err != nil {
+		t.Fatalf("NewSnapshotStorage() error = %v", err)
+	}
+	defer ss.Close()
+
+	pullSpec := "registry.ci.openshift.org/ocp/release@sha256:persist-test"
+
+	// Directly populate cache and simulate what Extract does after oc succeeds
+	extractor := NewReleaseExtractor(ss, 0)
+	snapshot := &storage.ReleaseSnapshot{
+		PullSpec: pullSpec,
+		Manifest: json.RawMessage(`{"persisted": true}`),
+		RPMList: &storage.RpmList{
+			Packages: map[string]string{"kernel": "5.14.0-427.el9"},
+		},
+		ExtractedAt: time.Now(),
+	}
+
+	// Manually store to both cache and storage (same as Extract does)
+	extractor.mu.Lock()
+	extractor.cache[pullSpec] = snapshot
+	extractor.mu.Unlock()
+	if err := ss.Set(ctx, pullSpec, snapshot); err != nil {
+		t.Fatalf("storage Set() error = %v", err)
+	}
+
+	// Create a new extractor with the same storage but empty in-memory cache
+	extractor2 := NewReleaseExtractor(ss, 0)
+
+	// It should find the snapshot via storage backend
+	snap, found := extractor2.Get(ctx, pullSpec)
+	if !found {
+		t.Fatal("Get() found = false, expected storage backend hit")
+	}
+	if snap.RPMList == nil {
+		t.Fatal("snapshot.RPMList is nil after storage retrieval")
+	}
+	if snap.RPMList.Packages["kernel"] != "5.14.0-427.el9" {
+		t.Errorf("kernel = %q, want %q", snap.RPMList.Packages["kernel"], "5.14.0-427.el9")
+	}
+}
+
+func TestReleaseExtractor_GetMissOnStorageError(t *testing.T) {
+	pullSpec := "registry.ci.openshift.org/ocp/release@sha256:missing"
+
+	// Extractor with nil storage — should handle gracefully
+	extractor := NewReleaseExtractor(nil, 0)
+
+	snap, found := extractor.Get(context.Background(), pullSpec)
+	if found {
+		t.Error("Get() found = true, want false for uncached pullSpec with nil storage")
+	}
+	if snap != nil {
+		t.Error("Get() returned non-nil snapshot for miss")
+	}
+}
+
+func TestDetectMachineOSTag(t *testing.T) {
+	tests := []struct {
+		name     string
+		manifest string
+		want     string
+	}{
+		{
+			name: "modern OCP 4.14-4.20 with rhel-coreos",
+			manifest: `{"references":{"spec":{"tags":[
+				{"name":"rhel-coreos"},
+				{"name":"rhel-coreos-extensions"},
+				{"name":"cluster-kube-apiserver-operator"}
+			]}}}`,
+			want: "rhel-coreos",
+		},
+		{
+			name: "multi-stream OCP 4.21+ with rhel-coreos and rhel-coreos-10",
+			manifest: `{"references":{"spec":{"tags":[
+				{"name":"rhel-coreos"},
+				{"name":"rhel-coreos-extensions"},
+				{"name":"rhel-coreos-10"},
+				{"name":"rhel-coreos-10-extensions"},
+				{"name":"etcd"}
+			]}}}`,
+			want: "rhel-coreos",
+		},
+		{
+			name: "OKD with stream-coreos",
+			manifest: `{"references":{"spec":{"tags":[
+				{"name":"stream-coreos"},
+				{"name":"stream-coreos-extensions"},
+				{"name":"cluster-version-operator"}
+			]}}}`,
+			want: "stream-coreos",
+		},
+		{
+			name: "old OCP 4.13 and earlier with machine-os-content",
+			manifest: `{"references":{"spec":{"tags":[
+				{"name":"machine-os-content"},
+				{"name":"cluster-kube-apiserver-operator"}
+			]}}}`,
+			want: "machine-os-content",
+		},
+		{
+			name: "no machine-OS tags at all",
+			manifest: `{"references":{"spec":{"tags":[
+				{"name":"etcd"},
+				{"name":"kube-apiserver"}
+			]}}}`,
+			want: "",
+		},
+		{
+			name: "invalid JSON",
+			manifest: `not valid json`,
+			want: "",
+		},
+		{
+			name: "empty manifest",
+			manifest: `{}`,
+			want: "",
+		},
+		{
+			name: "extensions tag without matching base",
+			manifest: `{"references":{"spec":{"tags":[
+				{"name":"rhel-coreos-extensions"},
+				{"name":"etcd"}
+			]}}}`,
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := detectMachineOSTag([]byte(tt.manifest))
+			if got != tt.want {
+				t.Errorf("detectMachineOSTag() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

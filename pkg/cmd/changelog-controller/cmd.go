@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -50,11 +51,12 @@ type Options struct {
 	sqliteDatabasePath string
 
 	// Firestore + GCS storage
-	firestoreEnabled      bool
-	firestoreProjectID    string
-	firestoreDatabaseID   string
-	firestoreCollectionID string
-	firestoreGCSBucket    string
+	firestoreEnabled              bool
+	firestoreProjectID            string
+	firestoreDatabaseID           string
+	firestoreCollectionID         string
+	firestoreSnapshotCollectionID string
+	firestoreGCSBucket            string
 
 	// Filesystem storage
 	filesystemEnabled bool
@@ -69,6 +71,9 @@ type Options struct {
 
 	// Worker count
 	workerCount int
+
+	// Maximum concurrent extractions
+	maxConcurrentExtractions int
 }
 
 func NewReleasePayloadChangelogControllerCommand(name string) *cobra.Command {
@@ -128,9 +133,11 @@ func (o *Options) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&o.firestoreDatabaseID, "firestore-database-id", getEnv("FIRESTORE_DATABASE_ID", ""),
 		"Firestore database ID (can also use FIRESTORE_DATABASE_ID env var, defaults to the (default) database)")
 	fs.StringVar(&o.firestoreCollectionID, "firestore-collection-id", getEnv("FIRESTORE_COLLECTION_ID", "changelogs"),
-		"Firestore collection ID (can also use FIRESTORE_COLLECTION_ID env var)")
+		"Firestore collection ID for changelogs (can also use FIRESTORE_COLLECTION_ID env var)")
+	fs.StringVar(&o.firestoreSnapshotCollectionID, "firestore-snapshot-collection-id", getEnv("FIRESTORE_SNAPSHOT_COLLECTION_ID", "release_snapshots"),
+		"Firestore collection ID for release snapshots (can also use FIRESTORE_SNAPSHOT_COLLECTION_ID env var)")
 	fs.StringVar(&o.firestoreGCSBucket, "firestore-gcs-bucket", getEnv("FIRESTORE_GCS_BUCKET", ""),
-		"GCS bucket for changelog content storage (can also use FIRESTORE_GCS_BUCKET env var)")
+		"GCS bucket for changelog and snapshot content storage (can also use FIRESTORE_GCS_BUCKET env var)")
 
 	// Filesystem storage flags
 	fs.BoolVar(&o.filesystemEnabled, "filesystem-enabled", getEnvBool("FILESYSTEM_ENABLED", true),
@@ -151,6 +158,10 @@ func (o *Options) AddFlags(fs *pflag.FlagSet) {
 	// Worker count flag
 	fs.IntVar(&o.workerCount, "workers", getEnvInt("WORKERS", 10),
 		"Number of changelog generation workers (can also use WORKERS env var)")
+
+	// Extraction concurrency flag
+	fs.IntVar(&o.maxConcurrentExtractions, "max-concurrent-extractions", getEnvInt("MAX_CONCURRENT_EXTRACTIONS", 3),
+		"Maximum number of concurrent oc extraction processes (can also use MAX_CONCURRENT_EXTRACTIONS env var)")
 }
 
 // getEnv returns the value of an environment variable or a default value
@@ -229,6 +240,9 @@ func (o *Options) Validate(ctx context.Context) error {
 		}
 		if o.firestoreCollectionID == "" {
 			return fmt.Errorf("firestore-collection-id is required when Firestore storage is enabled")
+		}
+		if o.firestoreSnapshotCollectionID == "" {
+			return fmt.Errorf("firestore-snapshot-collection-id is required when Firestore storage is enabled")
 		}
 		if o.firestoreGCSBucket == "" {
 			return fmt.Errorf("firestore-gcs-bucket is required when Firestore storage is enabled")
@@ -388,7 +402,6 @@ func (o *Options) warmCache(ctx context.Context, storages []storage.ChangelogSto
 
 func (o *Options) createHTTPHandler() http.Handler {
 	mux := http.NewServeMux()
-	// Handler for root endpoint - implement your custom logic here
 	mux.HandleFunc("/", o.handleRoot)
 	mux.HandleFunc("/changelog", o.handleChangelog)
 	mux.HandleFunc("/kernel", o.handleKernel)
@@ -400,27 +413,26 @@ func (o *Options) runHTTPServer(ctx context.Context) error {
 	handler := o.createHTTPHandler()
 
 	addr := fmt.Sprintf(":%d", o.httpPort)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("failed to listen on %s: %w", addr, err)
+	}
+
 	server := &http.Server{
-		Addr:    addr,
 		Handler: handler,
 	}
 
-	// Channel to receive server errors
 	serverErrors := make(chan error, 1)
-
-	// Start server in a goroutine
 	go func() {
 		klog.Infof("Starting changelog HTTP server on %s", addr)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := server.Serve(ln); err != nil && err != http.ErrServerClosed {
 			serverErrors <- fmt.Errorf("HTTP server error: %w", err)
 		}
 	}()
 
-	// Wait for context cancellation or server error
 	select {
 	case <-ctx.Done():
 		klog.Info("Shutting down changelog HTTP server...")
-		// Create a context with timeout for graceful shutdown
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
@@ -584,8 +596,8 @@ func (o *Options) handleChangelog(w http.ResponseWriter, r *http.Request) {
 	if o.cache != nil {
 		if cached, found := o.cache.Get(r.Context(), fromPullSpec, toPullSpec); found {
 			klog.V(4).Infof("Cache hit for %s -> %s", fromPullSpec, toPullSpec)
-			rpmDiff := o.lookupRpmDiff(r.Context(), fromPullSpec, toPullSpec)
-			o.writeChangelogResponse(w, from, to, cached, responseFormat, arch, fromPullSpec, toPullSpec, rpmDiff)
+			rpmDiff, rpmDiffStatus := o.lookupRpmDiff(r.Context(), fromPullSpec, toPullSpec)
+			o.writeChangelogResponse(w, from, to, cached, responseFormat, arch, fromPullSpec, toPullSpec, rpmDiff, rpmDiffStatus)
 			return
 		}
 		klog.V(4).Infof("Cache miss for %s -> %s", fromPullSpec, toPullSpec)
@@ -624,7 +636,7 @@ func (o *Options) handleChangelog(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (o *Options) writeChangelogResponse(w http.ResponseWriter, from, to, changelogData, responseFormat, arch, fromPullSpec, toPullSpec string, rpmDiff *changelog.RpmDiff) {
+func (o *Options) writeChangelogResponse(w http.ResponseWriter, from, to, changelogData, responseFormat, arch, fromPullSpec, toPullSpec string, rpmDiff *changelog.RpmDiff, rpmDiffStatus string) {
 	// Unmarshal into typed struct; fall back to raw JSON if it doesn't match
 	var cl changelog.ChangeLog
 	var changelogField interface{}
@@ -640,7 +652,7 @@ func (o *Options) writeChangelogResponse(w http.ResponseWriter, from, to, change
 	}
 
 	if responseFormat == "md" {
-		w.Header().Set("Content-Type", "text/markdown")
+		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 
 		if structured {
@@ -656,7 +668,7 @@ func (o *Options) writeChangelogResponse(w http.ResponseWriter, from, to, change
 	}
 
 	if responseFormat == "html" {
-		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 
 		if structured {
@@ -681,19 +693,21 @@ func (o *Options) writeChangelogResponse(w http.ResponseWriter, from, to, change
 	}
 
 	response := struct {
-		From         string             `json:"from"`
-		To           string             `json:"to"`
-		FromPullSpec string             `json:"fromPullSpec,omitempty"`
-		ToPullSpec   string             `json:"toPullSpec,omitempty"`
-		Changelog    interface{}        `json:"changelog"`
-		RpmDiff      *changelog.RpmDiff `json:"rpmDiff,omitempty"`
+		From          string             `json:"from"`
+		To            string             `json:"to"`
+		FromPullSpec  string             `json:"fromPullSpec,omitempty"`
+		ToPullSpec    string             `json:"toPullSpec,omitempty"`
+		Changelog     interface{}        `json:"changelog"`
+		RpmDiff       *changelog.RpmDiff `json:"rpmDiff,omitempty"`
+		RpmDiffStatus string             `json:"rpmDiffStatus,omitempty"`
 	}{
-		From:         from,
-		To:           to,
-		FromPullSpec: fromPullSpec,
-		ToPullSpec:   toPullSpec,
-		Changelog:    changelogField,
-		RpmDiff:      rpmDiff,
+		From:          from,
+		To:            to,
+		FromPullSpec:  fromPullSpec,
+		ToPullSpec:    toPullSpec,
+		Changelog:     changelogField,
+		RpmDiff:       rpmDiff,
+		RpmDiffStatus: rpmDiffStatus,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -706,23 +720,40 @@ func (o *Options) writeChangelogResponse(w http.ResponseWriter, from, to, change
 }
 
 // lookupRpmDiff computes an RPM diff between two releases using cached
-// snapshot data. Returns nil if snapshots are unavailable for either release
-func (o *Options) lookupRpmDiff(ctx context.Context, fromPullSpec, toPullSpec string) *changelog.RpmDiff {
+// snapshot data. If RPM data is missing for either release, background
+// extraction is triggered and a status message is returned to inform the caller.
+func (o *Options) lookupRpmDiff(ctx context.Context, fromPullSpec, toPullSpec string) (*changelog.RpmDiff, string) {
 	if o.extractor == nil {
-		return nil
+		return nil, ""
 	}
 
-	fromSnap, ok := o.extractor.Get(ctx, fromPullSpec)
-	if !ok || fromSnap.RPMList == nil {
-		return nil
+	fromSnap, fromOK := o.extractor.Get(ctx, fromPullSpec)
+	toSnap, toOK := o.extractor.Get(ctx, toPullSpec)
+
+	fromMissing := !fromOK || fromSnap.RPMList == nil
+	toMissing := !toOK || toSnap.RPMList == nil
+
+	// Trigger background extraction for any release missing RPM data
+	if fromMissing {
+		go func() {
+			if err := o.extractor.Extract(context.Background(), fromPullSpec); err != nil {
+				klog.Warningf("Background extraction failed for %s: %v", fromPullSpec, err)
+			}
+		}()
+	}
+	if toMissing {
+		go func() {
+			if err := o.extractor.Extract(context.Background(), toPullSpec); err != nil {
+				klog.Warningf("Background extraction failed for %s: %v", toPullSpec, err)
+			}
+		}()
 	}
 
-	toSnap, ok := o.extractor.Get(ctx, toPullSpec)
-	if !ok || toSnap.RPMList == nil {
-		return nil
+	if fromMissing || toMissing {
+		return nil, "RPM data extraction in progress, retry in ~60 seconds for rpmDiff"
 	}
 
-	return changelog.ComputeRpmDiff(fromSnap.RPMList.Packages, toSnap.RPMList.Packages)
+	return changelog.ComputeRpmDiff(fromSnap.RPMList.Packages, toSnap.RPMList.Packages), ""
 }
 
 // fetchPullSpecs fetches PullSpecs for the given release versions
@@ -839,18 +870,31 @@ func (o *Options) handleKernel(w http.ResponseWriter, r *http.Request) {
 
 	snap, ok := o.extractor.Get(r.Context(), pullSpec)
 	if !ok || snap.RPMList == nil {
-		if err := o.extractor.Extract(r.Context(), pullSpec); err != nil {
-			klog.Warningf("On-demand extraction failed for %s: %v", pullSpec, err)
-			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintf(w, `{"error": "failed to extract RPM data for release '%s'"}`+"\n", release)
-			return
+		// Extraction takes ~60s (rpmdb is slow), which exceeds the default
+		// HAProxy timeout (30s). Start it in the background so the client
+		// gets an immediate 202 instead of a 504 Gateway Timeout.
+		go func() {
+			if err := o.extractor.Extract(context.Background(), pullSpec); err != nil {
+				klog.Warningf("Background extraction failed for %s: %v", pullSpec, err)
+			}
+		}()
+
+		w.WriteHeader(http.StatusAccepted)
+		accepted := struct {
+			Status  string `json:"status"`
+			Message string `json:"message"`
+			Release string `json:"release"`
+			Arch    string `json:"arch"`
+		}{
+			Status:  "accepted",
+			Message: "RPM data extraction in progress, please retry in ~60 seconds",
+			Release: release,
+			Arch:    arch,
 		}
-		snap, ok = o.extractor.Get(r.Context(), pullSpec)
-		if !ok || snap.RPMList == nil {
-			w.WriteHeader(http.StatusNotFound)
-			fmt.Fprintf(w, `{"error": "RPM data not available for release '%s'"}`+"\n", release)
-			return
-		}
+		enc := json.NewEncoder(w)
+		enc.SetEscapeHTML(false)
+		enc.Encode(accepted)
+		return
 	}
 
 	kernel := snap.RPMList.Packages["kernel"]
@@ -992,20 +1036,56 @@ func (o *Options) Run(ctx context.Context) error {
 		}()
 	}
 
-	// Initialize snapshot storage for per-release extraction
+	// Initialize snapshot storage for per-release extraction.
+	// Firestore+GCS is preferred when enabled; filesystem is the fallback.
 	var snapshotStorage storage.ReleaseSnapshotStorage
-	if o.filesystemEnabled {
+	if o.firestoreEnabled {
+		klog.Infof("Initializing Firestore+GCS snapshot storage (project=%s, collection=%s, bucket=%s)",
+			o.firestoreProjectID, o.firestoreSnapshotCollectionID, o.firestoreGCSBucket)
+		ss, err := firestore.NewSnapshotStorage(ctx, firestore.SnapshotConfig{
+			ProjectID:    o.firestoreProjectID,
+			DatabaseID:   o.firestoreDatabaseID,
+			CollectionID: o.firestoreSnapshotCollectionID,
+			BucketName:   o.firestoreGCSBucket,
+		})
+		if err != nil {
+			klog.Warningf("Failed to initialize Firestore+GCS snapshot storage: %v", err)
+		} else {
+			snapshotStorage = ss
+			cleanupFuncs = append(cleanupFuncs, func() {
+				if err := ss.Close(); err != nil {
+					klog.Warningf("Failed to close Firestore+GCS snapshot storage: %v", err)
+				}
+			})
+			klog.Info("Firestore+GCS snapshot storage initialized successfully")
+		}
+	}
+	if snapshotStorage == nil && o.filesystemEnabled {
 		snapshotDir := filepath.Join(o.filesystemBaseDir, "snapshots")
 		ss, err := filesystem.NewSnapshotStorage(ctx, snapshotDir)
 		if err != nil {
-			klog.Warningf("Failed to initialize snapshot storage: %v", err)
+			klog.Warningf("Failed to initialize filesystem snapshot storage: %v", err)
 		} else {
 			snapshotStorage = ss
-			klog.Infof("Snapshot storage initialized at %s", snapshotDir)
+			klog.Infof("Filesystem snapshot storage initialized at %s", snapshotDir)
 		}
 	}
 
-	o.extractor = NewReleaseExtractor(snapshotStorage)
+	o.extractor = NewReleaseExtractor(snapshotStorage, o.maxConcurrentExtractions)
+
+	// Release Payload Changelog Controller
+	releasePayloadChangelogController := NewReleasePayloadChangelogController(o.controllerContext.EventRecorder, o.cache)
+	o.controller = releasePayloadChangelogController
+
+	// Start the HTTP server before cache warming so API requests during
+	// warming can fall through to storage backends. Health probes target
+	// port 8443 (library-go's GenericAPIServer), which starts even earlier.
+	httpServerErrors := make(chan error, 1)
+	go func() {
+		if err := o.runHTTPServer(ctx); err != nil {
+			httpServerErrors <- err
+		}
+	}()
 
 	// Warm cache from storage backends if enabled
 	if o.cacheWarmingEnabled {
@@ -1016,18 +1096,6 @@ func (o *Options) Run(ctx context.Context) error {
 			klog.Warningf("Failed to warm snapshot cache: %v", err)
 		}
 	}
-
-	// Release Payload Changelog Controller
-	releasePayloadChangelogController := NewReleasePayloadChangelogController(o.controllerContext.EventRecorder, o.cache)
-	o.controller = releasePayloadChangelogController
-
-	// Start the changelog HTTP server
-	httpServerErrors := make(chan error, 1)
-	go func() {
-		if err := o.runHTTPServer(ctx); err != nil {
-			httpServerErrors <- err
-		}
-	}()
 
 	// Start the informers
 	kubeFactory.Start(ctx.Done())

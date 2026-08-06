@@ -1,0 +1,22 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: changelog-controller
+  annotations:
+    cert-manager.io/cluster-issuer: cluster-issuer
+spec:
+  ingressClassName: openshift-default
+  rules:
+    - host: changelog.apps.engineering.openshift.org
+      http:
+        paths:
+          - backend:
+              service:
+                name: changelog-controller
+                port:
+                  number: 8080
+            pathType: ImplementationSpecific
+  tls:
+    - hosts:
+        - changelog.apps.engineering.openshift.org
+      secretName: changelog-controller-tls

@@ -57,7 +57,10 @@ func (w *ReleaseWatcher) Run(ctx context.Context) {
 
 // seedInitialState fetches the current ready releases and records them as seen
 // without enqueuing any changelog work. This prevents a flood of enqueue calls
-// on first startup for releases that already existed
+// on first startup for releases that already existed.
+//
+// It also triggers background extraction for the latest accepted release in
+// each stream so that RPM data is pre-populated for the most recent releases.
 func (w *ReleaseWatcher) seedInitialState(ctx context.Context) {
 	for key, client := range w.rcClient.GetAllClients() {
 		streams, err := client.GetReadyReleaseStreams(ctx)
@@ -78,6 +81,30 @@ func (w *ReleaseWatcher) seedInitialState(ctx context.Context) {
 		w.mu.Unlock()
 
 		klog.V(4).Infof("Release watcher: seeded %d releases from %s", len(w.seen[key]), key)
+
+		// Pre-extract metadata for the latest accepted release per stream.
+		// Concurrency is limited by the extractor's global semaphore.
+		if w.extractor != nil {
+			for streamName := range streams {
+				latest, err := client.GetLatestAcceptedForStream(ctx, streamName)
+				if err != nil {
+					klog.V(4).Infof("Release watcher: failed to get latest accepted for stream %s during seed: %v", streamName, err)
+					continue
+				}
+				pullSpec, err := client.GetPullSpec(ctx, latest.Name)
+				if err != nil {
+					klog.V(4).Infof("Release watcher: failed to get pull spec for %s during seed: %v", latest.Name, err)
+					continue
+				}
+				go func(tag, ps string) {
+					if err := w.extractor.Extract(ctx, ps); err != nil {
+						klog.Warningf("Release watcher: seed extraction failed for %s: %v", tag, err)
+					} else {
+						klog.Infof("Release watcher: seed extraction completed for %s", tag)
+					}
+				}(latest.Name, pullSpec)
+			}
+		}
 	}
 	klog.Info("Release watcher: initial state seeded")
 }

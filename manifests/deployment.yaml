@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: changelog-controller
+  namespace: changelog-controller
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: changelog-controller
+  template:
+    metadata:
+      labels:
+        app: changelog-controller
+    spec:
+      serviceAccountName: changelog-controller
+      containers:
+        - name: changelog-controller
+          image: image-registry.openshift-image-registry.svc:5000/changelog-controller/changelog-controller:latest
+          args:
+            - "start"
+            - "--namespace=changelog-controller"
+            - "--firestore-enabled=true"
+            - "--firestore-project-id=openshift-crt"
+            - "--firestore-database-id=changelog-controller"
+            - "--firestore-gcs-bucket=changelog-controller-data"
+            - "--filesystem-enabled=false"
+            - "--watcher-enabled=true"
+            - "--http-port=8080"
+          resources:
+            requests:
+              memory: "4Gi"
+            limits:
+              memory: "8Gi"
+          ports:
+            - containerPort: 8080
+            - containerPort: 8443
+          env:
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: /etc/gcs/credentials.json
+            - name: REGISTRY_AUTH_FILE
+              value: /etc/registry/auth.json
+          volumeMounts:
+            - name: gcs-credentials
+              mountPath: /etc/gcs
+              readOnly: true
+            - name: registry-credentials
+              mountPath: /etc/registry
+              readOnly: true
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8443
+              scheme: HTTPS
+            failureThreshold: 30
+            periodSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8443
+              scheme: HTTPS
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8443
+              scheme: HTTPS
+            periodSeconds: 10
+      volumes:
+        - name: gcs-credentials
+          secret:
+            secretName: gcs-credentials
+        - name: registry-credentials
+          secret:
+            secretName: registry-credentials

@@ -1,0 +1,3 @@
+FROM registry.apps.engineering.openshift.org/openshift/tools:latest
+COPY changelog-controller /usr/bin/changelog-controller
+ENTRYPOINT ["/usr/bin/changelog-controller"]

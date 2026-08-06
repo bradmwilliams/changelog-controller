@@ -126,6 +126,132 @@ func TestChangelogCache_HitRateCalculation(t *testing.T) {
 	}
 }
 
+func TestChangelogCache_StorageFallback(t *testing.T) {
+	ctx := context.Background()
+	tempDir := filepath.Join(os.TempDir(), "test-cache-fallback")
+	defer os.RemoveAll(tempDir)
+
+	fsStorage, err := filesystem.NewFilesystemStorage(ctx, filesystem.Config{
+		BaseDir: tempDir,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	defer fsStorage.Close()
+
+	// Write directly to storage backend, bypassing in-memory cache
+	if err := fsStorage.Set(ctx, "from-spec", "to-spec", "changelog from storage"); err != nil {
+		t.Fatalf("storage Set() error = %v", err)
+	}
+
+	// Create cache backed by this storage
+	cache := NewChangelogCache(fsStorage)
+
+	// In-memory cache is empty, so this should fall back to storage
+	result, found := cache.Get(ctx, "from-spec", "to-spec")
+	if !found {
+		t.Fatal("Get() found = false, expected storage fallback")
+	}
+	if result != "changelog from storage" {
+		t.Errorf("Get() = %q, want %q", result, "changelog from storage")
+	}
+
+	// Verify the entry was promoted to in-memory cache
+	result2, found := cache.Get(ctx, "from-spec", "to-spec")
+	if !found {
+		t.Fatal("second Get() found = false after promotion")
+	}
+	if result2 != "changelog from storage" {
+		t.Errorf("second Get() = %q, want %q", result2, "changelog from storage")
+	}
+
+	// Verify stats reflect 2 hits (both from in-memory after promotion)
+	stats := cache.Stats(ctx)
+	if stats.Hits != 2 {
+		t.Errorf("Expected 2 hits, got %d", stats.Hits)
+	}
+	if stats.Misses != 0 {
+		t.Errorf("Expected 0 misses, got %d", stats.Misses)
+	}
+}
+
+func TestChangelogCache_MissWhenNotInStorageEither(t *testing.T) {
+	ctx := context.Background()
+	tempDir := filepath.Join(os.TempDir(), "test-cache-total-miss")
+	defer os.RemoveAll(tempDir)
+
+	fsStorage, err := filesystem.NewFilesystemStorage(ctx, filesystem.Config{
+		BaseDir: tempDir,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	defer fsStorage.Close()
+
+	cache := NewChangelogCache(fsStorage)
+
+	result, found := cache.Get(ctx, "nonexistent-from", "nonexistent-to")
+	if found {
+		t.Error("Get() found = true for nonexistent entry")
+	}
+	if result != "" {
+		t.Errorf("Get() = %q, want empty string", result)
+	}
+
+	stats := cache.Stats(ctx)
+	if stats.Misses != 1 {
+		t.Errorf("Expected 1 miss, got %d", stats.Misses)
+	}
+}
+
+func TestChangelogCache_MultipleBackends(t *testing.T) {
+	ctx := context.Background()
+
+	tempDir1 := filepath.Join(os.TempDir(), "test-cache-multi-1")
+	tempDir2 := filepath.Join(os.TempDir(), "test-cache-multi-2")
+	defer os.RemoveAll(tempDir1)
+	defer os.RemoveAll(tempDir2)
+
+	fs1, err := filesystem.NewFilesystemStorage(ctx, filesystem.Config{BaseDir: tempDir1})
+	if err != nil {
+		t.Fatalf("Failed to create storage 1: %v", err)
+	}
+	defer fs1.Close()
+
+	fs2, err := filesystem.NewFilesystemStorage(ctx, filesystem.Config{BaseDir: tempDir2})
+	if err != nil {
+		t.Fatalf("Failed to create storage 2: %v", err)
+	}
+	defer fs2.Close()
+
+	cache := NewChangelogCache(fs1, fs2)
+
+	// Set should write to both backends
+	cache.Set(ctx, "1.0.0", "2.0.0", "multi-backend changelog")
+
+	// Verify both backends have the entry
+	r1, found1, err := fs1.Get(ctx, "1.0.0", "2.0.0")
+	if err != nil {
+		t.Fatalf("fs1.Get() error = %v", err)
+	}
+	if !found1 || r1 != "multi-backend changelog" {
+		t.Errorf("fs1 missing entry: found=%v, result=%q", found1, r1)
+	}
+
+	r2, found2, err := fs2.Get(ctx, "1.0.0", "2.0.0")
+	if err != nil {
+		t.Fatalf("fs2.Get() error = %v", err)
+	}
+	if !found2 || r2 != "multi-backend changelog" {
+		t.Errorf("fs2 missing entry: found=%v, result=%q", found2, r2)
+	}
+
+	stats := cache.Stats(ctx)
+	if len(stats.StorageBackends) != 2 {
+		t.Errorf("Expected 2 storage backends, got %d", len(stats.StorageBackends))
+	}
+}
+
 func TestChangelogCache_SizeTracking(t *testing.T) {
 	ctx := context.Background()
 	cache := NewChangelogCache()

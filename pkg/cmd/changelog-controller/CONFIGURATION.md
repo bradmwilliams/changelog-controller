@@ -400,7 +400,9 @@ W0414 12:00:00.156000       1 cmd.go:213] No storage backends enabled - changelo
 
 ### Health Checks
 
-The `/readyz` endpoint returns `200 OK` when the controller is ready, regardless of storage backend status.
+The controller framework provides `/healthz`, `/readyz`, and `/livez` on the secure port (8443) via library-go's GenericAPIServer. These endpoints start before the application controllers and are used by the Kubernetes liveness, readiness, and startup probes configured in `manifests/deployment.yaml`. Probes must use `scheme: HTTPS` since port 8443 serves TLS (self-signed if no service-serving-cert is present).
+
+The `/status` endpoint on port 8080 provides detailed diagnostics (cache contents, storage backend info) but is not used for probes.
 
 ---
 

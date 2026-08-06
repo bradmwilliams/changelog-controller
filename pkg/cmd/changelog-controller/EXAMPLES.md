@@ -557,14 +557,14 @@ Retry the request after a short delay to receive the completed changelog.
 
 The changelog controller runs **two separate HTTP servers**:
 
-### 1. Controller Server (Default Port: varies by deployment)
-- Provided by the Kubernetes controller framework
+### 1. Controller Server (Port 8443)
+- Provided by library-go's GenericAPIServer (TLS, self-signed if no service-serving-cert)
 - Endpoints:
   - `/metrics` - Prometheus metrics
-  - `/readyz` - Readiness probe
-  - `/healthz` - Health check
+  - `/healthz` - Health check (used by Kubernetes liveness probes)
+  - `/readyz` - Readiness probe (used by Kubernetes readiness probes)
   - `/livez` - Liveness probe
-- Configured via controller framework flags
+- Starts before the application controllers and leader election
 
 ### 2. Changelog HTTP Server (Default Port: 8080)
 - Dedicated server for changelog API endpoints
@@ -573,7 +573,7 @@ The changelog controller runs **two separate HTTP servers**:
   - `/` - API documentation
   - `/changelog` - Generate changelogs (JSON default, optional `format=md` or `format=html`)
   - `/kernel` - Kernel version lookup for a release
-  - `/status` - Cache and storage status
+  - `/status` - Cache and storage diagnostics
 
 **Example Configuration:**
 ```bash
