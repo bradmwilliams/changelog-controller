@@ -1,0 +1,3 @@
+FROM registry.access.redhat.com/ubi9-minimal:latest
+COPY changelog-client /usr/bin/changelog-client
+ENTRYPOINT ["/usr/bin/changelog-client"]
