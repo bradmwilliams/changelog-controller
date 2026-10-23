@@ -158,3 +158,27 @@ func TestSQLiteStorage_Close(t *testing.T) {
 		t.Error("Get() after Close() should error")
 	}
 }
+
+func TestSQLiteStorage_Count(t *testing.T) {
+	ctx := context.Background()
+	storage, err := NewSQLiteStorage(ctx, Config{DatabasePath: ":memory:"})
+	if err != nil {
+		t.Fatalf("Failed to create storage: %v", err)
+	}
+	defer storage.Close()
+
+	if err := storage.Set(ctx, "1.0.0", "2.0.0", "first"); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+	if err := storage.Set(ctx, "2.0.0", "3.0.0", "second"); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	count, err := storage.Count(ctx)
+	if err != nil {
+		t.Fatalf("Count() error = %v", err)
+	}
+	if count != 2 {
+		t.Errorf("Count() = %d, want 2", count)
+	}
+}

@@ -29,3 +29,10 @@ type ChangelogLister interface {
 	// This is used for cache warming on startup
 	List(ctx context.Context) ([]ChangelogEntry, error)
 }
+
+// ChangelogCounter is an optional interface that storage backends can implement
+// to report their entry count without fetching changelog contents
+type ChangelogCounter interface {
+	// Count returns the number of changelog entries stored in the backend
+	Count(ctx context.Context) (int, error)
+}

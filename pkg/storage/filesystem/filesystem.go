@@ -24,6 +24,7 @@ type Config struct {
 
 var _ storage.ChangelogStorage = (*FilesystemStorage)(nil)
 var _ storage.ChangelogLister = (*FilesystemStorage)(nil)
+var _ storage.ChangelogCounter = (*FilesystemStorage)(nil)
 
 // NewFilesystemStorage creates a new filesystem storage backend
 func NewFilesystemStorage(ctx context.Context, cfg Config) (*FilesystemStorage, error) {
@@ -159,4 +160,45 @@ func (s *FilesystemStorage) List(ctx context.Context) ([]storage.ChangelogEntry,
 	}
 
 	return changelogs, nil
+}
+
+// Count returns the number of valid changelog entries without reading changelog contents
+func (s *FilesystemStorage) Count(ctx context.Context) (int, error) {
+	entries, err := os.ReadDir(s.baseDir)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read directory: %w", err)
+	}
+
+	count := 0
+	for _, entry := range entries {
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		default:
+		}
+
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".txt") {
+			continue
+		}
+
+		metaData, err := os.ReadFile(filepath.Join(s.baseDir, strings.TrimSuffix(entry.Name(), ".txt")+".meta"))
+		if err != nil {
+			continue
+		}
+
+		var fromVersion, toVersion string
+		for _, line := range strings.Split(string(metaData), "\n") {
+			if strings.HasPrefix(line, "from: ") {
+				fromVersion = strings.TrimPrefix(line, "from: ")
+			} else if strings.HasPrefix(line, "to: ") {
+				toVersion = strings.TrimPrefix(line, "to: ")
+			}
+		}
+
+		if fromVersion != "" && toVersion != "" {
+			count++
+		}
+	}
+
+	return count, nil
 }

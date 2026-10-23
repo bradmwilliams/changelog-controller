@@ -63,7 +63,8 @@ type Options struct {
 	filesystemBaseDir string
 
 	// Cache warming
-	cacheWarmingEnabled bool
+	cacheWarmingEnabled     bool
+	cacheWarmingConcurrency int
 
 	// Release watcher
 	watcherEnabled      bool
@@ -148,6 +149,8 @@ func (o *Options) AddFlags(fs *pflag.FlagSet) {
 	// Cache warming flag
 	fs.BoolVar(&o.cacheWarmingEnabled, "cache-warming-enabled", getEnvBool("CACHE_WARMING_ENABLED", true),
 		"Enable cache warming from storage backends on startup (enabled by default)")
+	fs.IntVar(&o.cacheWarmingConcurrency, "cache-warming-concurrency", getEnvInt("CACHE_WARMING_CONCURRENCY", 32),
+		"Maximum number of GCS objects read in parallel during cache warming (can also use CACHE_WARMING_CONCURRENCY env var)")
 
 	// Release watcher flags
 	fs.BoolVar(&o.watcherEnabled, "watcher-enabled", getEnvBool("WATCHER_ENABLED", true),
@@ -309,10 +312,11 @@ func (o *Options) initializeStorageBackends(ctx context.Context) ([]storage.Chan
 		klog.Infof("Initializing Firestore storage (project=%s, database=%s, collection=%s, bucket=%s)",
 			o.firestoreProjectID, o.firestoreDatabaseID, o.firestoreCollectionID, o.firestoreGCSBucket)
 		firestoreStorage, err := firestore.NewFirestoreStorage(ctx, firestore.Config{
-			ProjectID:    o.firestoreProjectID,
-			DatabaseID:   o.firestoreDatabaseID,
-			CollectionID: o.firestoreCollectionID,
-			BucketName:   o.firestoreGCSBucket,
+			ProjectID:       o.firestoreProjectID,
+			DatabaseID:      o.firestoreDatabaseID,
+			CollectionID:    o.firestoreCollectionID,
+			BucketName:      o.firestoreGCSBucket,
+			ListConcurrency: o.cacheWarmingConcurrency,
 		})
 		if err != nil {
 			klog.Warningf("Failed to initialize Firestore storage: %v", err)
@@ -379,7 +383,7 @@ func (o *Options) warmCache(ctx context.Context, storages []storage.ChangelogSto
 
 		// Load entries into cache
 		for _, entry := range entries {
-			o.cache.Set(ctx, entry.FromVersion, entry.ToVersion, entry.Changelog)
+			o.cache.Seed(entry.FromVersion, entry.ToVersion, entry.Changelog)
 			totalEntries++
 		}
 
@@ -1043,10 +1047,11 @@ func (o *Options) Run(ctx context.Context) error {
 		klog.Infof("Initializing Firestore+GCS snapshot storage (project=%s, collection=%s, bucket=%s)",
 			o.firestoreProjectID, o.firestoreSnapshotCollectionID, o.firestoreGCSBucket)
 		ss, err := firestore.NewSnapshotStorage(ctx, firestore.SnapshotConfig{
-			ProjectID:    o.firestoreProjectID,
-			DatabaseID:   o.firestoreDatabaseID,
-			CollectionID: o.firestoreSnapshotCollectionID,
-			BucketName:   o.firestoreGCSBucket,
+			ProjectID:       o.firestoreProjectID,
+			DatabaseID:      o.firestoreDatabaseID,
+			CollectionID:    o.firestoreSnapshotCollectionID,
+			BucketName:      o.firestoreGCSBucket,
+			ListConcurrency: o.cacheWarmingConcurrency,
 		})
 		if err != nil {
 			klog.Warningf("Failed to initialize Firestore+GCS snapshot storage: %v", err)

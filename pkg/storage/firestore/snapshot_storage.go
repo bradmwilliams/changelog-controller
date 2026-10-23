@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"io"
 	"time"
 
 	"cloud.google.com/go/firestore"
@@ -21,10 +20,12 @@ import (
 // an index and GCS as the content store. Each snapshot is stored as a JSON
 // object in GCS, with a lightweight Firestore document pointing to it.
 type SnapshotStorage struct {
-	collectionID string
-	bucketName   string
-	fsClient     *firestore.Client
-	gcsClient    *gcs.Client
+	collectionID    string
+	bucketName      string
+	fsClient        *firestore.Client
+	gcsClient       *gcs.Client
+	reader          gcsObjectReader
+	listConcurrency int
 }
 
 // snapshotIndexDoc represents the Firestore index document for a snapshot
@@ -41,6 +42,9 @@ type SnapshotConfig struct {
 	DatabaseID   string
 	CollectionID string
 	BucketName   string
+	// ListConcurrency is the maximum number of GCS objects read in parallel
+	// when listing snapshots for cache warming. Defaults to 32 when <= 0.
+	ListConcurrency int
 }
 
 var _ storage.ReleaseSnapshotStorage = (*SnapshotStorage)(nil)
@@ -76,10 +80,12 @@ func NewSnapshotStorage(ctx context.Context, cfg SnapshotConfig) (*SnapshotStora
 	}
 
 	return &SnapshotStorage{
-		collectionID: cfg.CollectionID,
-		bucketName:   cfg.BucketName,
-		fsClient:     fsClient,
-		gcsClient:    gcsClient,
+		collectionID:    cfg.CollectionID,
+		bucketName:      cfg.BucketName,
+		fsClient:        fsClient,
+		gcsClient:       gcsClient,
+		reader:          &gcsClientReader{client: gcsClient, bucketName: cfg.BucketName},
+		listConcurrency: normalizeListConcurrency(cfg.ListConcurrency),
 	}, nil
 }
 
@@ -151,13 +157,13 @@ func (s *SnapshotStorage) Set(ctx context.Context, pullSpec string, snapshot *st
 	return nil
 }
 
-// List returns all snapshots by reading the index from Firestore and
-// fetching each snapshot from GCS
+// List returns all snapshots by reading the index from Firestore and fetching
+// their contents from GCS in parallel
 func (s *SnapshotStorage) List(ctx context.Context) ([]*storage.ReleaseSnapshot, error) {
 	it := s.fsClient.Collection(s.collectionID).Documents(ctx)
 	defer it.Stop()
 
-	var snapshots []*storage.ReleaseSnapshot
+	var docs []snapshotIndexDoc
 	for {
 		snap, err := it.Next()
 		if err == iterator.Done {
@@ -173,19 +179,34 @@ func (s *SnapshotStorage) List(ctx context.Context) ([]*storage.ReleaseSnapshot,
 			continue
 		}
 
-		data, err := s.readFromGCS(ctx, doc.ObjectPath)
-		if err != nil {
-			klog.Warningf("Skipping snapshot %s (GCS read failed): %v", doc.PullSpec, err)
+		docs = append(docs, doc)
+	}
+
+	paths := make([]string, len(docs))
+	for i := range docs {
+		paths[i] = docs[i].ObjectPath
+	}
+
+	contents, readErrs := readObjectsInParallel(ctx, s.reader, paths, s.listConcurrency)
+
+	snapshots := make([]*storage.ReleaseSnapshot, 0, len(docs))
+	for i, doc := range docs {
+		if readErrs[i] != nil {
+			klog.Warningf("Skipping snapshot %s (GCS read failed): %v", doc.PullSpec, readErrs[i])
 			continue
 		}
 
 		var snapshot storage.ReleaseSnapshot
-		if err := json.Unmarshal(data, &snapshot); err != nil {
+		if err := json.Unmarshal(contents[i], &snapshot); err != nil {
 			klog.Warningf("Skipping snapshot %s (unmarshal failed): %v", doc.PullSpec, err)
 			continue
 		}
 
 		snapshots = append(snapshots, &snapshot)
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
 	return snapshots, nil
@@ -222,15 +243,5 @@ func (s *SnapshotStorage) writeToGCS(ctx context.Context, path string, data []by
 }
 
 func (s *SnapshotStorage) readFromGCS(ctx context.Context, path string) ([]byte, error) {
-	r, err := s.gcsClient.Bucket(s.bucketName).Object(path).NewReader(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-	defer r.Close()
-
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-	return data, nil
+	return s.reader.ReadObject(ctx, path)
 }

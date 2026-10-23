@@ -25,6 +25,7 @@ type Config struct {
 
 var _ storage.ChangelogStorage = (*SQLiteStorage)(nil)
 var _ storage.ChangelogLister = (*SQLiteStorage)(nil)
+var _ storage.ChangelogCounter = (*SQLiteStorage)(nil)
 
 // NewSQLiteStorage creates a new SQLite storage backend
 func NewSQLiteStorage(ctx context.Context, cfg Config) (*SQLiteStorage, error) {
@@ -142,4 +143,13 @@ func (s *SQLiteStorage) List(ctx context.Context) ([]storage.ChangelogEntry, err
 	}
 
 	return entries, nil
+}
+
+// Count returns the number of changelog entries without fetching their contents
+func (s *SQLiteStorage) Count(ctx context.Context) (int, error) {
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM changelogs`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("failed to count changelogs: %w", err)
+	}
+	return count, nil
 }

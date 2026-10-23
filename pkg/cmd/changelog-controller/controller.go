@@ -28,7 +28,7 @@ type ChangelogRequest struct {
 type QueueItemState int
 
 const (
-	QueueItemPending    QueueItemState = iota
+	QueueItemPending QueueItemState = iota
 	QueueItemProcessing
 )
 
@@ -138,8 +138,30 @@ func (c *ChangelogCache) Get(ctx context.Context, from, to string) (string, bool
 
 // Set stores a changelog result in the cache and all storage backends
 func (c *ChangelogCache) Set(ctx context.Context, from, to, changelog string) {
-	// Store in memory
 	c.mu.Lock()
+	c.setMemoryLocked(from, to, changelog)
+	c.mu.Unlock()
+
+	// Store in all storage backends
+	for _, s := range c.storages {
+		if err := s.Set(ctx, from, to, changelog); err != nil {
+			klog.Warningf("Error storing to storage backend: %v", err)
+		}
+	}
+}
+
+// Seed stores a changelog in the in-memory cache only, without writing it to
+// the storage backends. It is intended for cache warming, where the entry was
+// just read from storage and re-persisting it would be redundant.
+func (c *ChangelogCache) Seed(from, to, changelog string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.setMemoryLocked(from, to, changelog)
+}
+
+// setMemoryLocked stores a changelog in the in-memory cache and updates the
+// tracked size. The caller must hold c.mu.
+func (c *ChangelogCache) setMemoryLocked(from, to, changelog string) {
 	key := fmt.Sprintf("%s->%s", from, to)
 
 	// If replacing an existing entry, subtract its size first
@@ -150,14 +172,6 @@ func (c *ChangelogCache) Set(ctx context.Context, from, to, changelog string) {
 	c.cache[key] = changelog
 	// Add size of key and value (approximate memory usage)
 	c.sizeBytes += int64(len(key) + len(changelog))
-	c.mu.Unlock()
-
-	// Store in all storage backends
-	for _, s := range c.storages {
-		if err := s.Set(ctx, from, to, changelog); err != nil {
-			klog.Warningf("Error storing to storage backend: %v", err)
-		}
-	}
 }
 
 // Stats returns cache statistics including storage backend information
@@ -204,8 +218,15 @@ func (c *ChangelogCache) Stats(ctx context.Context) CacheStats {
 			}
 		}
 
-		// If backend supports listing, get entry count
-		if lister, ok := s.(storage.ChangelogLister); ok {
+		// Prefer backend-native counts so diagnostics do not fetch changelog contents.
+		if counter, ok := s.(storage.ChangelogCounter); ok {
+			entries, err := counter.Count(ctx)
+			if err != nil {
+				backendStats.Error = err.Error()
+			} else {
+				backendStats.Entries = entries
+			}
+		} else if lister, ok := s.(storage.ChangelogLister); ok {
 			entries, err := lister.List(ctx)
 			if err != nil {
 				backendStats.Error = err.Error()

@@ -35,6 +35,7 @@ type Config struct {
 
 var _ storage.ChangelogStorage = (*BigQueryStorage)(nil)
 var _ storage.ChangelogLister = (*BigQueryStorage)(nil)
+var _ storage.ChangelogCounter = (*BigQueryStorage)(nil)
 
 // NewBigQueryStorage creates a new BigQuery storage backend
 func NewBigQueryStorage(ctx context.Context, cfg Config) (*BigQueryStorage, error) {
@@ -149,4 +150,26 @@ func (s *BigQueryStorage) List(ctx context.Context) ([]storage.ChangelogEntry, e
 	}
 
 	return entries, nil
+}
+
+// Count returns the number of changelog entries without fetching their contents
+func (s *BigQueryStorage) Count(ctx context.Context) (int, error) {
+	q := s.client.Query(fmt.Sprintf(`
+		SELECT COUNT(*) AS count
+		FROM `+"`%s.%s.%s`"+`
+	`, s.projectID, s.datasetID, s.tableID))
+
+	it, err := q.Read(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to query BigQuery count: %w", err)
+	}
+
+	var row struct {
+		Count int64 `bigquery:"count"`
+	}
+	if err := it.Next(&row); err != nil {
+		return 0, fmt.Errorf("failed to read BigQuery count: %w", err)
+	}
+
+	return int(row.Count), nil
 }

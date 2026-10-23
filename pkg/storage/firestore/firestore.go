@@ -4,10 +4,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"io"
 	"time"
 
 	"cloud.google.com/go/firestore"
+	pb "cloud.google.com/go/firestore/apiv1/firestorepb"
 	gcs "cloud.google.com/go/storage"
 	"github.com/bradmwilliams/changelog-controller/pkg/storage"
 	"google.golang.org/api/iterator"
@@ -20,10 +20,12 @@ import (
 // and GCS as the content store. Firestore documents hold version metadata and
 // a reference to the GCS object that contains the actual changelog.
 type FirestoreStorage struct {
-	collectionID string
-	bucketName   string
-	fsClient     *firestore.Client
-	gcsClient    *gcs.Client
+	collectionID    string
+	bucketName      string
+	fsClient        *firestore.Client
+	gcsClient       *gcs.Client
+	reader          gcsObjectReader
+	listConcurrency int
 }
 
 // indexDoc represents a Firestore document that maps a version pair to a
@@ -41,10 +43,14 @@ type Config struct {
 	DatabaseID   string
 	CollectionID string
 	BucketName   string
+	// ListConcurrency is the maximum number of GCS objects read in parallel
+	// when listing entries for cache warming. Defaults to 32 when <= 0.
+	ListConcurrency int
 }
 
 var _ storage.ChangelogStorage = (*FirestoreStorage)(nil)
 var _ storage.ChangelogLister = (*FirestoreStorage)(nil)
+var _ storage.ChangelogCounter = (*FirestoreStorage)(nil)
 
 // NewFirestoreStorage creates a new Firestore + GCS storage backend
 func NewFirestoreStorage(ctx context.Context, cfg Config) (*FirestoreStorage, error) {
@@ -76,10 +82,12 @@ func NewFirestoreStorage(ctx context.Context, cfg Config) (*FirestoreStorage, er
 	}
 
 	return &FirestoreStorage{
-		collectionID: cfg.CollectionID,
-		bucketName:   cfg.BucketName,
-		fsClient:     fsClient,
-		gcsClient:    gcsClient,
+		collectionID:    cfg.CollectionID,
+		bucketName:      cfg.BucketName,
+		fsClient:        fsClient,
+		gcsClient:       gcsClient,
+		reader:          &gcsClientReader{client: gcsClient, bucketName: cfg.BucketName},
+		listConcurrency: normalizeListConcurrency(cfg.ListConcurrency),
 	}, nil
 }
 
@@ -164,12 +172,12 @@ func (s *FirestoreStorage) Close() error {
 }
 
 // List returns all changelog entries by reading the index from Firestore
-// and fetching each changelog from GCS
+// and fetching their contents from GCS in parallel
 func (s *FirestoreStorage) List(ctx context.Context) ([]storage.ChangelogEntry, error) {
 	it := s.fsClient.Collection(s.collectionID).Documents(ctx)
 	defer it.Stop()
 
-	var entries []storage.ChangelogEntry
+	var docs []indexDoc
 	for {
 		snap, err := it.Next()
 		if err == iterator.Done {
@@ -181,22 +189,78 @@ func (s *FirestoreStorage) List(ctx context.Context) ([]storage.ChangelogEntry, 
 
 		var doc indexDoc
 		if err := snap.DataTo(&doc); err != nil {
-			return nil, fmt.Errorf("failed to decode Firestore document: %w", err)
+			klog.Warningf("Skipping malformed changelog index document %s: %v", snap.Ref.ID, err)
+			continue
 		}
 
-		changelog, err := s.readFromGCS(ctx, doc.ObjectPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read changelog from GCS: %w", err)
-		}
+		docs = append(docs, doc)
+	}
 
+	paths := make([]string, len(docs))
+	for i := range docs {
+		paths[i] = docs[i].ObjectPath
+	}
+
+	contents, readErrs := readObjectsInParallel(ctx, s.reader, paths, s.listConcurrency)
+
+	entries := make([]storage.ChangelogEntry, 0, len(docs))
+	for i, doc := range docs {
+		if readErrs[i] != nil {
+			klog.Warningf("Skipping changelog %s->%s (GCS read failed): %v", doc.FromVersion, doc.ToVersion, readErrs[i])
+			continue
+		}
 		entries = append(entries, storage.ChangelogEntry{
 			FromVersion: doc.FromVersion,
 			ToVersion:   doc.ToVersion,
-			Changelog:   changelog,
+			Changelog:   string(contents[i]),
 		})
 	}
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	return entries, nil
+}
+
+// Count returns the number of Firestore index entries without fetching changelog contents from GCS
+func (s *FirestoreStorage) Count(ctx context.Context) (int, error) {
+	result, err := s.fsClient.Collection(s.collectionID).
+		NewAggregationQuery().
+		WithCount("count").
+		Get(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count Firestore index entries: %w", err)
+	}
+
+	value, ok := result["count"]
+	if !ok {
+		return 0, fmt.Errorf("Firestore count result did not contain count")
+	}
+	count, err := aggregationCount(value)
+	if err != nil {
+		return 0, err
+	}
+
+	return int(count), nil
+}
+
+// aggregationCount converts a Firestore aggregation result value to an int64.
+// Depending on the client library version, the value is either a native int64
+// or a raw *firestorepb.Value.
+func aggregationCount(value any) (int64, error) {
+	switch v := value.(type) {
+	case int64:
+		return v, nil
+	case *pb.Value:
+		switch t := v.ValueType.(type) {
+		case *pb.Value_IntegerValue:
+			return t.IntegerValue, nil
+		case *pb.Value_DoubleValue:
+			return int64(t.DoubleValue), nil
+		}
+	}
+	return 0, fmt.Errorf("Firestore count result has unexpected type %T", value)
 }
 
 func (s *FirestoreStorage) writeToGCS(ctx context.Context, path, content string) error {
@@ -214,15 +278,9 @@ func (s *FirestoreStorage) writeToGCS(ctx context.Context, path, content string)
 }
 
 func (s *FirestoreStorage) readFromGCS(ctx context.Context, path string) (string, error) {
-	r, err := s.gcsClient.Bucket(s.bucketName).Object(path).NewReader(ctx)
+	data, err := s.reader.ReadObject(ctx, path)
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", path, err)
-	}
-	defer r.Close()
-
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return "", fmt.Errorf("%s: %w", path, err)
+		return "", err
 	}
 	return string(data), nil
 }

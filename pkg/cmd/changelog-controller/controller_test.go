@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/bradmwilliams/changelog-controller/pkg/storage"
 	"github.com/bradmwilliams/changelog-controller/pkg/storage/filesystem"
 )
 
@@ -301,5 +302,49 @@ func TestChangelogCache_SizeTracking(t *testing.T) {
 	// Verify we have 2 entries
 	if stats.MemoryEntries != 2 {
 		t.Errorf("Expected 2 entries, got %d", stats.MemoryEntries)
+	}
+}
+
+type countingStorage struct {
+	count  int
+	listed bool
+}
+
+func (s *countingStorage) Get(ctx context.Context, from, to string) (string, bool, error) {
+	return "", false, nil
+}
+
+func (s *countingStorage) Set(ctx context.Context, from, to, changelog string) error {
+	return nil
+}
+
+func (s *countingStorage) Close() error {
+	return nil
+}
+
+func (s *countingStorage) List(ctx context.Context) ([]storage.ChangelogEntry, error) {
+	s.listed = true
+	return nil, nil
+}
+
+func (s *countingStorage) Count(ctx context.Context) (int, error) {
+	return s.count, nil
+}
+
+func TestChangelogCache_StatsPrefersCounter(t *testing.T) {
+	backend := &countingStorage{count: 7}
+	stats := NewChangelogCache(backend).Stats(context.Background())
+
+	if len(stats.StorageBackends) != 1 {
+		t.Fatalf("Expected 1 storage backend, got %d", len(stats.StorageBackends))
+	}
+	if stats.StorageBackends[0].Entries != 7 {
+		t.Errorf("Entries = %d, want 7", stats.StorageBackends[0].Entries)
+	}
+	if stats.StorageBackends[0].Error != "" {
+		t.Errorf("Error = %q, want empty", stats.StorageBackends[0].Error)
+	}
+	if backend.listed {
+		t.Error("Stats() called List() even though Count() is available")
 	}
 }
