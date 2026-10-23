@@ -83,11 +83,11 @@ type RebuiltImage struct {
 
 // ChangeLogJson contains structured changelog information
 type ChangeLogJson struct {
-	From          *ReleaseRef    `json:"from"`
-	To            *ReleaseRef    `json:"to"`
+	From          *ReleaseRef          `json:"from"`
+	To            *ReleaseRef          `json:"to"`
 	Components    []ChangeLogComponent `json:"components,omitempty"`
-	UpdatedImages []UpdatedImage `json:"updatedImages,omitempty"`
-	RebuiltImages []RebuiltImage `json:"rebuiltImages,omitempty"`
+	UpdatedImages []UpdatedImage       `json:"updatedImages,omitempty"`
+	RebuiltImages []RebuiltImage       `json:"rebuiltImages,omitempty"`
 }
 
 // ReleaseInfo contains detailed information about a specific release

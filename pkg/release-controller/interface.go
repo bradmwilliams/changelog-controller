@@ -12,7 +12,7 @@ type Client interface {
 	Get(ctx context.Context, path string) (io.ReadCloser, error)
 
 	// GetJSON performs a GET request and unmarshals the JSON response into the provided interface
-	GetJSON(ctx context.Context, path string, v interface{}) error
+	GetJSON(ctx context.Context, path string, v any) error
 
 	// GetAllReleaseStreams fetches all release streams with their releases from /api/v1/releasestreams/all
 	// Returns a map of stream names to their list of releases

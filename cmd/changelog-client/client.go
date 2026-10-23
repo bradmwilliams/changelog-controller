@@ -58,7 +58,7 @@ func (c *Client) GetChangelog(from, to, arch string) (*ChangelogResponse, error)
 	return &result, nil
 }
 
-func (c *Client) getJSON(rawURL string, target interface{}) error {
+func (c *Client) getJSON(rawURL string, target any) error {
 	resp, err := c.http.Get(rawURL)
 	if err != nil {
 		return err

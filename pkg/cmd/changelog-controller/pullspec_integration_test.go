@@ -110,7 +110,7 @@ func TestPullSpecIntegration(t *testing.T) {
 			t.Errorf("expected status 200, got %d", resp.StatusCode)
 		}
 
-		var result map[string]interface{}
+		var result map[string]any
 		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 			t.Fatalf("failed to decode JSON response: %v", err)
 		}
@@ -142,7 +142,7 @@ func TestPullSpecIntegration(t *testing.T) {
 		resp := w.Result()
 		defer resp.Body.Close()
 
-		var result map[string]interface{}
+		var result map[string]any
 		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 			t.Fatalf("failed to decode JSON response: %v", err)
 		}

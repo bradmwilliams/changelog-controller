@@ -235,7 +235,7 @@ func (s *FirestoreStorage) Count(ctx context.Context) (int, error) {
 
 	value, ok := result["count"]
 	if !ok {
-		return 0, fmt.Errorf("Firestore count result did not contain count")
+		return 0, fmt.Errorf("firestore count result did not contain count")
 	}
 	count, err := aggregationCount(value)
 	if err != nil {
@@ -260,7 +260,7 @@ func aggregationCount(value any) (int64, error) {
 			return int64(t.DoubleValue), nil
 		}
 	}
-	return 0, fmt.Errorf("Firestore count result has unexpected type %T", value)
+	return 0, fmt.Errorf("firestore count result has unexpected type %T", value)
 }
 
 func (s *FirestoreStorage) writeToGCS(ctx context.Context, path, content string) error {

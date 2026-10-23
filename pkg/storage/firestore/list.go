@@ -35,9 +35,7 @@ func readObjectsInParallel(ctx context.Context, reader gcsObjectReader, paths []
 		}
 
 		i := i
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			defer func() { <-sem }()
 
 			data, err := reader.ReadObject(ctx, paths[i])
@@ -46,7 +44,7 @@ func readObjectsInParallel(ctx context.Context, reader gcsObjectReader, paths []
 				return
 			}
 			results[i] = data
-		}()
+		})
 	}
 
 	wg.Wait()

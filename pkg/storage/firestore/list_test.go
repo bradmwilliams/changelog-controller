@@ -67,7 +67,7 @@ func TestReadObjectsInParallel_BoundsConcurrencyAndPreservesOrder(t *testing.T) 
 	data := make(map[string][]byte, pathCount)
 	for i := range paths {
 		paths[i] = fmt.Sprintf("object-%d", i)
-		data[paths[i]] = []byte(fmt.Sprintf("content-%d", i))
+		data[paths[i]] = fmt.Appendf(nil, "content-%d", i)
 	}
 
 	reader := &fakeObjectReader{data: data, delay: 20 * time.Millisecond}

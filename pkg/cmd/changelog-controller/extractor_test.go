@@ -316,14 +316,14 @@ func TestDetectMachineOSTag(t *testing.T) {
 			want: "",
 		},
 		{
-			name: "invalid JSON",
+			name:     "invalid JSON",
 			manifest: `not valid json`,
-			want: "",
+			want:     "",
 		},
 		{
-			name: "empty manifest",
+			name:     "empty manifest",
 			manifest: `{}`,
-			want: "",
+			want:     "",
 		},
 		{
 			name: "extensions tag without matching base",

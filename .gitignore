@@ -3,3 +3,10 @@
 __debug_bin*
 *.exe
 .vscode/
+.idea/
+.vscode/
+
+.scannerwork/
+coverage.out
+golangci-lint.out
+report.json

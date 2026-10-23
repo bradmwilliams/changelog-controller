@@ -3,6 +3,7 @@ package releasecontroller
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 )
 
@@ -155,14 +156,11 @@ func (c *client) FindRelease(ctx context.Context, releaseName string) ([]Release
 	endpoint := c.GetEndpoint()
 
 	for streamName, releases := range streams {
-		for _, release := range releases {
-			if release == releaseName {
-				locations = append(locations, ReleaseLocation{
-					Endpoint:   endpoint,
-					StreamName: streamName,
-				})
-				break // Found in this stream, no need to continue
-			}
+		if slices.Contains(releases, releaseName) {
+			locations = append(locations, ReleaseLocation{
+				Endpoint:   endpoint,
+				StreamName: streamName,
+			}) // Found in this stream, no need to continue
 		}
 	}
 

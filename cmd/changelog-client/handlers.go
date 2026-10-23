@@ -75,13 +75,13 @@ func (s *Server) handleRelease(w http.ResponseWriter, r *http.Request, stream st
 	}
 
 	var (
-		wg             sync.WaitGroup
-		tags           *APIRelease
-		info           *APIReleaseInfo
-		qualifiers     *QualifiersResponse
-		tagsErr        error
-		infoErr        error
-		qualifiersErr  error
+		wg            sync.WaitGroup
+		tags          *APIRelease
+		info          *APIReleaseInfo
+		qualifiers    *QualifiersResponse
+		tagsErr       error
+		infoErr       error
+		qualifiersErr error
 	)
 
 	wg.Add(3)
@@ -143,8 +143,8 @@ func parseReleasePath(path string) (stream, tag string, hasRelease bool) {
 	path = strings.TrimPrefix(path, "/releasestream/")
 	path = strings.TrimSuffix(path, "/")
 
-	if idx := strings.Index(path, "/release/"); idx >= 0 {
-		return path[:idx], path[idx+len("/release/"):], true
+	if before, after, ok := strings.Cut(path, "/release/"); ok {
+		return before, after, true
 	}
 
 	return path, "", false

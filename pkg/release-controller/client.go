@@ -112,7 +112,7 @@ func (c *client) Get(ctx context.Context, path string) (io.ReadCloser, error) {
 }
 
 // GetJSON performs a GET request and unmarshals the JSON response
-func (c *client) GetJSON(ctx context.Context, path string, v interface{}) error {
+func (c *client) GetJSON(ctx context.Context, path string, v any) error {
 	body, err := c.Get(ctx, path)
 	if err != nil {
 		return err

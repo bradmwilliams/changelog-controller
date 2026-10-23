@@ -448,18 +448,18 @@ func TestWriteChangelogResponse_StructuredJSON(t *testing.T) {
 	resp := w.Result()
 	defer resp.Body.Close()
 
-	var result map[string]interface{}
+	var result map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	changelog, ok := result["changelog"].(map[string]interface{})
+	changelog, ok := result["changelog"].(map[string]any)
 	if !ok {
 		t.Fatal("changelog field is not a JSON object")
 	}
 
 	// Verify the changelog is structured (has typed from/to objects, not raw string)
-	fromObj, ok := changelog["from"].(map[string]interface{})
+	fromObj, ok := changelog["from"].(map[string]any)
 	if !ok {
 		t.Fatal("changelog.from is not a JSON object")
 	}
@@ -467,7 +467,7 @@ func TestWriteChangelogResponse_StructuredJSON(t *testing.T) {
 		t.Errorf("changelog.from.name = %v, want 4.18.2", fromObj["name"])
 	}
 
-	toObj, ok := changelog["to"].(map[string]interface{})
+	toObj, ok := changelog["to"].(map[string]any)
 	if !ok {
 		t.Fatal("changelog.to is not a JSON object")
 	}
@@ -475,7 +475,7 @@ func TestWriteChangelogResponse_StructuredJSON(t *testing.T) {
 		t.Errorf("changelog.to.name = %v, want 4.18.3", toObj["name"])
 	}
 
-	components, ok := changelog["components"].([]interface{})
+	components, ok := changelog["components"].([]any)
 	if !ok {
 		t.Fatal("changelog.components is not an array")
 	}
@@ -483,7 +483,7 @@ func TestWriteChangelogResponse_StructuredJSON(t *testing.T) {
 		t.Errorf("changelog.components has %d entries, want 1", len(components))
 	}
 
-	updatedImages, ok := changelog["updatedImages"].([]interface{})
+	updatedImages, ok := changelog["updatedImages"].([]any)
 	if !ok {
 		t.Fatal("changelog.updatedImages is not an array")
 	}
@@ -554,13 +554,13 @@ func TestWriteChangelogResponse_CoreOSEnrichment(t *testing.T) {
 	}
 
 	// Kubernetes component should not have URLs
-	var result map[string]interface{}
+	var result map[string]any
 	if err := json.NewDecoder(strings.NewReader(body)).Decode(&result); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
-	changelog := result["changelog"].(map[string]interface{})
-	components := changelog["components"].([]interface{})
-	k8s := components[1].(map[string]interface{})
+	changelog := result["changelog"].(map[string]any)
+	components := changelog["components"].([]any)
+	k8s := components[1].(map[string]any)
 	if _, ok := k8s["versionUrl"]; ok {
 		t.Error("Kubernetes component should not have versionUrl")
 	}
@@ -880,7 +880,7 @@ func TestHandleKernel_NoKernelPackage(t *testing.T) {
 		PullSpec: "quay.io/test/release:4.22.6-x86_64",
 		RPMList: &storage.RpmList{
 			Packages: map[string]string{
-				"bash":     "5.2.26-4.el9",
+				"bash":      "5.2.26-4.el9",
 				"coreutils": "9.1-8.el9",
 			},
 		},
@@ -956,7 +956,7 @@ func TestHandleKernel_202AcceptedWhenRPMNotCached(t *testing.T) {
 		t.Errorf("Expected 202 Accepted, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var result map[string]interface{}
+	var result map[string]any
 	if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
@@ -1105,7 +1105,7 @@ func TestHandleChangelog_CacheMiss202(t *testing.T) {
 		t.Errorf("Expected 202 on cache miss, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var result map[string]interface{}
+	var result map[string]any
 	if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
@@ -1196,20 +1196,20 @@ func TestHandleChangelog_WithRpmDiff(t *testing.T) {
 		t.Fatalf("Expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var result map[string]interface{}
+	var result map[string]any
 	if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	rpmDiff, ok := result["rpmDiff"].(map[string]interface{})
+	rpmDiff, ok := result["rpmDiff"].(map[string]any)
 	if !ok {
 		t.Fatal("Expected rpmDiff field in response")
 	}
-	changed, ok := rpmDiff["changed"].(map[string]interface{})
+	changed, ok := rpmDiff["changed"].(map[string]any)
 	if !ok {
 		t.Fatal("Expected rpmDiff.changed field")
 	}
-	kernelDiff, ok := changed["kernel"].(map[string]interface{})
+	kernelDiff, ok := changed["kernel"].(map[string]any)
 	if !ok {
 		t.Fatal("Expected kernel entry in rpmDiff.changed")
 	}
@@ -1284,7 +1284,7 @@ func TestHandleChangelog_RpmDiffStatusWhenMissing(t *testing.T) {
 		t.Fatalf("Expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var result map[string]interface{}
+	var result map[string]any
 	if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
@@ -1365,13 +1365,13 @@ func TestWriteChangelogResponse_FallbackForNonChangelogJSON(t *testing.T) {
 	w := httptest.NewRecorder()
 	opts.writeChangelogResponse(w, "1.0.0", "2.0.0", arbitraryJSON, "json", "amd64", "", "", nil, "")
 
-	var result map[string]interface{}
+	var result map[string]any
 	if err := json.NewDecoder(w.Result().Body).Decode(&result); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
 	// Should preserve the raw JSON, not convert to an empty ChangeLog
-	changelog, ok := result["changelog"].(map[string]interface{})
+	changelog, ok := result["changelog"].(map[string]any)
 	if !ok {
 		t.Fatal("changelog field is not a JSON object")
 	}
@@ -1379,4 +1379,3 @@ func TestWriteChangelogResponse_FallbackForNonChangelogJSON(t *testing.T) {
 		t.Errorf("arbitrary JSON field not preserved: got %v", changelog["key"])
 	}
 }
-

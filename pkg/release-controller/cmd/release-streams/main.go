@@ -13,17 +13,17 @@ import (
 
 func main() {
 	var (
-		arch         = flag.String("arch", "amd64", "Architecture (amd64, arm64, s390x, ppc64le, multi)")
-		product      = flag.String("product", "ocp", "Product (ocp, origin)")
-		all          = flag.Bool("all", false, "Query all endpoints")
-		verbose      = flag.Bool("v", false, "Verbose output")
-		streamName   = flag.String("stream", "", "Filter to specific release stream")
-		stats        = flag.Bool("stats", false, "Show statistics for all streams")
-		limit        = flag.Int("limit", 0, "Limit number of releases shown per stream (0 = all)")
-		findRelease  = flag.String("find", "", "Find which streams contain the specified release")
-		releaseInfo  = flag.String("info", "", "Get detailed info for a specific release")
+		arch              = flag.String("arch", "amd64", "Architecture (amd64, arm64, s390x, ppc64le, multi)")
+		product           = flag.String("product", "ocp", "Product (ocp, origin)")
+		all               = flag.Bool("all", false, "Query all endpoints")
+		verbose           = flag.Bool("v", false, "Verbose output")
+		streamName        = flag.String("stream", "", "Filter to specific release stream")
+		stats             = flag.Bool("stats", false, "Show statistics for all streams")
+		limit             = flag.Int("limit", 0, "Limit number of releases shown per stream (0 = all)")
+		findRelease       = flag.String("find", "", "Find which streams contain the specified release")
+		releaseInfo       = flag.String("info", "", "Get detailed info for a specific release")
 		releaseInfoStream = flag.String("info-stream", "", "Stream name for -info (required with -info)")
-		pullSpec     = flag.String("pullspec", "", "Get the pull specification for a specific release")
+		pullSpec          = flag.String("pullspec", "", "Get the pull specification for a specific release")
 	)
 	flag.Parse()
 
@@ -402,7 +402,7 @@ func getReleaseInfo(ctx context.Context, arch, product, streamName, releaseName 
 				fmt.Println("\nComponents:")
 				for _, comp := range info.ChangeLogJson.Components {
 					if comp.From != "" && comp.Version != "" {
-							fmt.Printf("  - %s: %s → %s\n", comp.Name, comp.From, comp.Version)
+						fmt.Printf("  - %s: %s → %s\n", comp.Name, comp.From, comp.Version)
 					} else {
 						fmt.Printf("  - %s\n", comp.Name)
 					}
@@ -444,9 +444,10 @@ func getReleaseInfo(ctx context.Context, arch, product, streamName, releaseName 
 		blockingSuccess := 0
 		blockingFailed := 0
 		for _, job := range info.Results.BlockingJobs {
-			if job.State == "Succeeded" {
+			switch job.State {
+			case "Succeeded":
 				blockingSuccess++
-			} else if job.State == "Failed" {
+			case "Failed":
 				blockingFailed++
 			}
 		}
@@ -454,9 +455,10 @@ func getReleaseInfo(ctx context.Context, arch, product, streamName, releaseName 
 		informingSuccess := 0
 		informingFailed := 0
 		for _, job := range info.Results.InformingJobs {
-			if job.State == "Succeeded" {
+			switch job.State {
+			case "Succeeded":
 				informingSuccess++
-			} else if job.State == "Failed" {
+			case "Failed":
 				informingFailed++
 			}
 		}

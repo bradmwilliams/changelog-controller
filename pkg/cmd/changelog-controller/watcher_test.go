@@ -98,8 +98,7 @@ func TestReleaseWatcher_DetectsNewReleases(t *testing.T) {
 	// Create watcher with short poll interval for testing
 	watcher := NewReleaseWatcher(mcClient, controller, nil, 100*time.Millisecond)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	// Seed initial state
 	watcher.seedInitialState(ctx)
@@ -242,8 +241,7 @@ func TestReleaseWatcher_SeedTriggersExtraction(t *testing.T) {
 
 	watcher := NewReleaseWatcher(mcClient, controller, extractor, 100*time.Millisecond)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	watcher.seedInitialState(ctx)
 
@@ -356,8 +354,7 @@ func TestReleaseWatcher_SeedExtractionConcurrency(t *testing.T) {
 
 	watcher := NewReleaseWatcher(mcClient, controller, extractor, 100*time.Millisecond)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	watcher.seedInitialState(ctx)
 

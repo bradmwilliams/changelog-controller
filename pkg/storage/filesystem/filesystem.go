@@ -132,12 +132,12 @@ func (s *FilesystemStorage) List(ctx context.Context) ([]storage.ChangelogEntry,
 
 		// Parse metadata: "from: X.X.X\nto: Y.Y.Y\n"
 		var fromVersion, toVersion string
-		lines := strings.Split(string(metaData), "\n")
-		for _, line := range lines {
-			if strings.HasPrefix(line, "from: ") {
-				fromVersion = strings.TrimPrefix(line, "from: ")
-			} else if strings.HasPrefix(line, "to: ") {
-				toVersion = strings.TrimPrefix(line, "to: ")
+		lines := strings.SplitSeq(string(metaData), "\n")
+		for line := range lines {
+			if after, ok := strings.CutPrefix(line, "from: "); ok {
+				fromVersion = after
+			} else if after, ok := strings.CutPrefix(line, "to: "); ok {
+				toVersion = after
 			}
 		}
 
@@ -187,11 +187,11 @@ func (s *FilesystemStorage) Count(ctx context.Context) (int, error) {
 		}
 
 		var fromVersion, toVersion string
-		for _, line := range strings.Split(string(metaData), "\n") {
-			if strings.HasPrefix(line, "from: ") {
-				fromVersion = strings.TrimPrefix(line, "from: ")
-			} else if strings.HasPrefix(line, "to: ") {
-				toVersion = strings.TrimPrefix(line, "to: ")
+		for line := range strings.SplitSeq(string(metaData), "\n") {
+			if after, ok := strings.CutPrefix(line, "from: "); ok {
+				fromVersion = after
+			} else if after, ok := strings.CutPrefix(line, "to: "); ok {
+				toVersion = after
 			}
 		}
 

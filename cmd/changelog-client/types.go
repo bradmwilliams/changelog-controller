@@ -24,7 +24,7 @@ type APIReleaseInfo struct {
 	UpgradesFrom     []UpgradeHistory         `json:"upgradesFrom,omitempty"`
 	ChangeLog        []byte                   `json:"changeLog,omitempty"`
 	ChangeLogJson    *ChangeLog               `json:"changeLogJson,omitempty"`
-	NodeImageStreams []APINodeImageStream      `json:"nodeImageStreams,omitempty"`
+	NodeImageStreams []APINodeImageStream     `json:"nodeImageStreams,omitempty"`
 }
 
 type APINodeImageStream struct {
@@ -74,8 +74,8 @@ type ChangelogResponse struct {
 }
 
 type ChangeLog struct {
-	From ReleaseInfo     `json:"from"`
-	To   ReleaseInfo     `json:"to"`
+	From ReleaseInfo `json:"from"`
+	To   ReleaseInfo `json:"to"`
 
 	Components    []ComponentInfo `json:"components,omitempty"`
 	NewImages     []ImageInfo     `json:"newImages,omitempty"`

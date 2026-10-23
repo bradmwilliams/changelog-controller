@@ -643,7 +643,7 @@ func (o *Options) handleChangelog(w http.ResponseWriter, r *http.Request) {
 func (o *Options) writeChangelogResponse(w http.ResponseWriter, from, to, changelogData, responseFormat, arch, fromPullSpec, toPullSpec string, rpmDiff *changelog.RpmDiff, rpmDiffStatus string) {
 	// Unmarshal into typed struct; fall back to raw JSON if it doesn't match
 	var cl changelog.ChangeLog
-	var changelogField interface{}
+	var changelogField any
 	structured := false
 	if err := json.Unmarshal([]byte(changelogData), &cl); err == nil && cl.From.Name != "" && cl.To.Name != "" {
 		enrichCoreOSComponents(&cl, arch)
@@ -701,7 +701,7 @@ func (o *Options) writeChangelogResponse(w http.ResponseWriter, from, to, change
 		To            string             `json:"to"`
 		FromPullSpec  string             `json:"fromPullSpec,omitempty"`
 		ToPullSpec    string             `json:"toPullSpec,omitempty"`
-		Changelog     interface{}        `json:"changelog"`
+		Changelog     any                `json:"changelog"`
 		RpmDiff       *changelog.RpmDiff `json:"rpmDiff,omitempty"`
 		RpmDiffStatus string             `json:"rpmDiffStatus,omitempty"`
 	}{
